@@ -1,0 +1,23 @@
+# Secrets
+.env
+
+# Generierte Ausgabedateien
+news_*.json
+breaking_*.json
+breaking_seen.json
+log.txt
+test_output.txt
+test_error.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Editor / System
+.claude/
+.vscode/
+*.DS_Store
+Thumbs.db
