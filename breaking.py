@@ -112,11 +112,9 @@ def breaking_news_check(client, unsplash_key, on_complete=None):
             print(f"      Claude-Fehler: {e}")
             continue
 
-        bild = bester["image_url"]
-        if not bild and unsplash_key:
-            bild = unsplash_bild_suchen(
-                client, bester["headline"], analyse.get("category", ""), unsplash_key
-            )
+        bild = unsplash_bild_suchen(
+            client, bester["headline"], analyse.get("category", ""), unsplash_key
+        )
         if not bild:
             bild = KATEGORIE_FALLBACK_BILDER.get(analyse.get("category", ""), "")
 

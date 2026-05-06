@@ -92,11 +92,9 @@ def normaler_durchlauf(client, unsplash_key):
                 uebersprungen += 1
                 continue
             kategorie = analyse.get("category", "Sonstiges")
-            image_url = artikel["image_url"]
-            if not image_url:
-                image_url = unsplash_bild_suchen(client, artikel["headline"], kategorie, unsplash_key)
-                if image_url:
-                    print(f"    Unsplash-Bild gefunden.")
+            image_url = unsplash_bild_suchen(client, artikel["headline"], kategorie, unsplash_key)
+            if image_url:
+                print(f"    Unsplash-Bild gefunden.")
             if not image_url:
                 image_url = KATEGORIE_FALLBACK_BILDER.get(kategorie, "")
             ergebnisse.append({
@@ -156,9 +154,7 @@ def normaler_durchlauf(client, unsplash_key):
         alle_quellen = ", ".join(dict.fromkeys(a["source"] for a in gruppe))
         vorhandene_spektren = [s for s in ALLE_AUSRICHTUNGEN if any(a["political_leaning"] == s for a in gruppe)]
         alle_spektren = ", ".join(vorhandene_spektren)
-        image_url = next((a["image_url"] for a in gruppe if a.get("image_url")), "")
-        if not image_url:
-            image_url = unsplash_bild_suchen(client, cluster_headline, bester["category"], unsplash_key)
+        image_url = unsplash_bild_suchen(client, cluster_headline, bester["category"], unsplash_key)
         if not image_url:
             image_url = KATEGORIE_FALLBACK_BILDER.get(bester["category"], "")
 

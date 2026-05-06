@@ -15,16 +15,6 @@ def teaser_bereinigen(text):
     return text[:500]
 
 
-def bild_aus_eintrag(eintrag):
-    if hasattr(eintrag, "media_content") and eintrag.media_content:
-        return eintrag.media_content[0].get("url", "")
-    if hasattr(eintrag, "media_thumbnail") and eintrag.media_thumbnail:
-        return eintrag.media_thumbnail[0].get("url", "")
-    if hasattr(eintrag, "links"):
-        for link in eintrag.links:
-            if link.get("type", "").startswith("image"):
-                return link.get("href", "")
-    return ""
 
 
 def schlagzeilen_abrufen(max_pro_quelle=5, gesamt_limit=None, verbose=True):
@@ -44,7 +34,7 @@ def schlagzeilen_abrufen(max_pro_quelle=5, gesamt_limit=None, verbose=True):
                     "headline": eintrag.get("title", "").strip(),
                     "teaser": teaser,
                     "link": eintrag.get("link", ""),
-                    "image_url": bild_aus_eintrag(eintrag),
+                    "image_url": "",
                     "source": name,
                     "political_leaning": daten["ausrichtung"],
                 })
