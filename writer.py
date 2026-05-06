@@ -63,7 +63,10 @@ def zusammenfassen_mit_sonnet(client, schlagzeile):
 
 Headline: "{schlagzeile['headline']}"{teaser_block}
 
-Schreibe außerdem eine eigene sachliche Headline auf Deutsch in max. 10 Wörtern. Keine Meinung, keine Wertung, keine Ausrufezeichen, kein Clickbait. Nur belegbare Fakten.
+Falls der Artikel kein seriöser Nachrichtenartikel ist (Satire, Werbung, fiktiver Inhalt, kein journalistischer Nachrichtenwert), antworte NUR mit:
+{{"summary": "KEIN_ARTIKEL"}}
+
+Andernfalls schreibe eine eigene sachliche Headline auf Deutsch in max. 10 Wörtern. Keine Meinung, keine Wertung, keine Ausrufezeichen, kein Clickbait. Nur belegbare Fakten.
 
 Antworte NUR mit diesem JSON (kein weiterer Text):
 {{

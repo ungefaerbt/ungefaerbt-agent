@@ -87,6 +87,10 @@ def normaler_durchlauf(client, unsplash_key):
         print(f"  [{i}/{len(gefiltert)}] {artikel['headline'][:70]}...")
         try:
             analyse = analyse_mit_claude(client, artikel)
+            if analyse.get("summary") == "KEIN_ARTIKEL":
+                print(f"    ↳ Kein seriöser Artikel – verworfen.")
+                uebersprungen += 1
+                continue
             kategorie = analyse.get("category", "Sonstiges")
             image_url = artikel["image_url"]
             if not image_url:
