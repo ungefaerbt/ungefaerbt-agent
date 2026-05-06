@@ -178,10 +178,10 @@ def unsplash_bild_suchen(headline, kategorie, access_key):
 def schlagzeilen_clustern(artikel_liste):
     sonderzeichen = '„""»«\'"\\-.,!?:()'
 
-    def keywords(headline):
+    def keywords(text):
         return {
             w.strip(sonderzeichen).lower()
-            for w in headline.split()
+            for w in text.split()
             if len(w.strip(sonderzeichen)) > 3
             and w.strip(sonderzeichen).lower() not in _STOPPWOERTER
         }
@@ -195,11 +195,63 @@ def schlagzeilen_clustern(artikel_liste):
             x = eltern[x]
         return x
 
-    kw_liste = [keywords(a["headline"]) for a in artikel_liste]
+    # Stufe 1: 2+ gemeinsame Keywords aus Headline
+    kw_headline = [keywords(a["headline"]) for a in artikel_liste]
     for i in range(n):
         for j in range(i + 1, n):
-            if len(kw_liste[i] & kw_liste[j]) >= 2:
+            if len(kw_headline[i] & kw_headline[j]) >= 2:
                 eltern[find(i)] = find(j)
+
+    # Singletons nach Stufe 1 ermitteln
+    wurzeln_s1 = [find(i) for i in range(n)]
+    groessen_s1 = Counter(wurzeln_s1)
+    singletons = [i for i in range(n) if groessen_s1[wurzeln_s1[i]] == 1]
+
+    # Stufe 2: Headline + Teaser kombiniert, 3+ Keywords, nur für Singletons
+    kw_kombi = [
+        keywords(a["headline"] + " " + a.get("teaser", ""))
+        for a in artikel_liste
+    ]
+    for idx_i in range(len(singletons)):
+        i = singletons[idx_i]
+        for idx_j in range(idx_i + 1, len(singletons)):
+            j = singletons[idx_j]
+            if find(i) != find(j) and len(kw_kombi[i] & kw_kombi[j]) >= 3:
+                eltern[find(i)] = find(j)
+
+    # Singletons nach Stufe 2 ermitteln
+    wurzeln_s2 = [find(i) for i in range(n)]
+    groessen_s2 = Counter(wurzeln_s2)
+    singletons_s2 = [i for i in range(n) if groessen_s2[wurzeln_s2[i]] == 1]
+
+    # Stufe 4: Kernthema – häufigstes Named Entity (Großbuchstabe, ≥6 Zeichen) in Headline+Teaser
+    # Bindestrich-Komposita werden gesplittet: „Hondius"-Passagier → "Hondius" + "Passagier"
+    # Jedes Teil wird nochmals gestrippt um Restzeichen wie „Hondius" → Hondius zu bereinigen
+    def kernthema(text):
+        kandidaten = []
+        for w in text.split():
+            for teil in w.strip(sonderzeichen).split('-'):
+                teil = teil.strip(sonderzeichen)
+                if teil and teil[0].isupper() and len(teil) >= 6 and teil.lower() not in _STOPPWOERTER:
+                    kandidaten.append(teil.lower())
+        if not kandidaten:
+            return None
+        return Counter(kandidaten).most_common(1)[0][0]
+
+    thema_zu_idx = defaultdict(list)
+    for i in singletons_s2:
+        kt = kernthema(
+            artikel_liste[i]["headline"] + " " + artikel_liste[i].get("teaser", "")
+        )
+        if kt:
+            thema_zu_idx[kt].append(i)
+
+    for indices in thema_zu_idx.values():
+        if len(indices) >= 2:
+            for k in indices[1:]:
+                ri, rk = find(indices[0]), find(k)
+                if ri != rk:
+                    eltern[rk] = ri
 
     wurzeln = [find(i) for i in range(n)]
     groessen = Counter(wurzeln)
@@ -219,7 +271,9 @@ def schlagzeilen_clustern(artikel_liste):
         count = len(vorhandene & set(ALLE_AUSRICHTUNGEN))
         score = round(len(stille) / len(ALLE_AUSRICHTUNGEN) * 100)
 
-        if not stille:
+        if len(gruppe) == 1:
+            label = "Einzelmeldung"
+        elif not stille:
             label = "Vollspektrum"
         elif set(stille) <= {"Rechts", "Mitte-Rechts"}:
             label = "Rechts-Blindspot"
@@ -227,8 +281,6 @@ def schlagzeilen_clustern(artikel_liste):
             label = "Links-Blindspot"
         elif stille == ["Mitte"]:
             label = "Mitte-Blindspot"
-        elif len(gruppe) == 1:
-            label = "Einzelmeldung"
         else:
             label = "Gemischter Blindspot"
 
@@ -418,18 +470,17 @@ def schlagzeilen_abrufen(max_pro_quelle=5, gesamt_limit=None, verbose=True):
 
 
 # ─── Claude-Analyse ─────────────────────────────────────────────
-def analyse_mit_claude(client, schlagzeile):
+def klassifizieren_mit_haiku(client, schlagzeile):
     teaser_block = ""
     if schlagzeile.get("teaser"):
         teaser_block = f'\nBeschreibung: "{schlagzeile["teaser"]}"\n'
 
-    nutzer_nachricht = f"""Analysiere diesen Nachrichtenartikel von {schlagzeile['source']}:
+    nutzer_nachricht = f"""Klassifiziere diesen Nachrichtenartikel von {schlagzeile['source']}:
 
 Headline: "{schlagzeile['headline']}"{teaser_block}
 
 Antworte NUR mit diesem JSON (kein weiterer Text):
 {{
-  "summary": "Neutrale Zusammenfassung in 2–3 Sätzen.",
   "category": "Eines von: Politik / Wirtschaft / Gesellschaft / International / Technologie / Sport / Kultur / Umwelt",
   "is_breaking": false,
   "relevance_score": 65,
@@ -437,8 +488,8 @@ Antworte NUR mit diesem JSON (kein weiterer Text):
 }}"""
 
     antwort = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=400,
+        model="claude-haiku-4-5-20251001",
+        max_tokens=150,
         system=[
             {
                 "type": "text",
@@ -457,19 +508,113 @@ Antworte NUR mit diesem JSON (kein weiterer Text):
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        summary_match = re.search(r'"summary"\s*:\s*"(.*?)"(?=\s*,\s*"|\s*\})', text, re.DOTALL)
         category_match = re.search(r'"category"\s*:\s*"([^"]+)"', text)
         breaking_match = re.search(r'"is_breaking"\s*:\s*(true|false)', text)
         score_match = re.search(r'"relevance_score"\s*:\s*(\d+)', text)
         top_match = re.search(r'"is_top_story"\s*:\s*(true|false)', text)
-        if not summary_match:
-            raise
         return {
-            "summary": summary_match.group(1).replace('\\"', '"'),
             "category": category_match.group(1) if category_match else "Sonstiges",
             "is_breaking": breaking_match.group(1) == "true" if breaking_match else False,
             "relevance_score": int(score_match.group(1)) if score_match else 50,
             "is_top_story": top_match.group(1) == "true" if top_match else False,
+        }
+
+
+def zusammenfassen_mit_sonnet(client, schlagzeile):
+    teaser_block = ""
+    if schlagzeile.get("teaser"):
+        teaser_block = f'\nBeschreibung: "{schlagzeile["teaser"]}"\n'
+
+    nutzer_nachricht = f"""Fasse diesen Nachrichtenartikel von {schlagzeile['source']} zusammen:
+
+Headline: "{schlagzeile['headline']}"{teaser_block}
+
+Schreibe außerdem eine eigene sachliche Headline auf Deutsch in max. 10 Wörtern. Keine Meinung, keine Wertung, keine Ausrufezeichen, kein Clickbait. Nur belegbare Fakten.
+
+Antworte NUR mit diesem JSON (kein weiterer Text):
+{{
+  "headline": "Eigene neutrale Headline",
+  "summary": "Neutrale Zusammenfassung in 2–3 Sätzen."
+}}"""
+
+    antwort = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=300,
+        system=[
+            {
+                "type": "text",
+                "text": SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"}
+            }
+        ],
+        messages=[{"role": "user", "content": nutzer_nachricht}]
+    )
+
+    text = antwort.content[0].text.strip()
+    if "```" in text:
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        headline_match = re.search(r'"headline"\s*:\s*"(.*?)"(?=\s*,\s*"|\s*\})', text, re.DOTALL)
+        summary_match = re.search(r'"summary"\s*:\s*"(.*?)"(?=\s*,\s*"|\s*\})', text, re.DOTALL)
+        if not summary_match:
+            raise
+        return {
+            "headline": headline_match.group(1).replace('\\"', '"') if headline_match else "",
+            "summary": summary_match.group(1).replace('\\"', '"'),
+        }
+
+
+def analyse_mit_claude(client, schlagzeile):
+    klassifikation = klassifizieren_mit_haiku(client, schlagzeile)
+    zusammenfassung = zusammenfassen_mit_sonnet(client, schlagzeile)
+    return {**klassifikation, **zusammenfassung}
+
+
+def cluster_synthese_mit_sonnet(client, cluster_artikel):
+    """Synthetisiert mehrere Cluster-Artikel zu einer einzigen neutralen Zusammenfassung."""
+    artikel_texte = []
+    for i, a in enumerate(cluster_artikel, 1):
+        artikel_texte.append(
+            f"Quelle {i} ({a['source']}, {a['political_leaning']}):\n"
+            f"Headline: \"{a['headline']}\"\n"
+            f"Zusammenfassung: {a.get('summary', '')}"
+        )
+
+    nutzer_nachricht = (
+        f"Synthetisiere folgende {len(cluster_artikel)} Berichte über dasselbe Ereignis "
+        f"zu einer einzigen neutralen Zusammenfassung:\n\n"
+        + "\n\n".join(artikel_texte)
+        + "\n\nFalls die Artikel NICHT dasselbe Ereignis beschreiben, antworte ausschließlich mit:\n"
+        '{"summary": "KEIN_CLUSTER"}\n\n'
+        "Andernfalls schreibe auch eine eigene sachliche Headline auf Deutsch in max. 10 Wörtern "
+        "(keine Meinung, kein Clickbait, nur belegbare Fakten) und antworte NUR mit diesem JSON:\n"
+        '{\n  "headline": "Eigene neutrale Headline",\n  "summary": "Neutrale Synthese in 2–3 Sätzen ohne eine Meinung."\n}'
+    )
+
+    antwort = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=400,
+        system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": nutzer_nachricht}]
+    )
+
+    text = antwort.content[0].text.strip()
+    if "```" in text:
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        headline_match = re.search(r'"headline"\s*:\s*"(.*?)"(?=\s*,\s*"|\s*\})', text, re.DOTALL)
+        m = re.search(r'"summary"\s*:\s*"(.*?)"(?=\s*,\s*"|\s*\})', text, re.DOTALL)
+        return {
+            "headline": headline_match.group(1).replace('\\"', '"') if headline_match else "",
+            "summary": m.group(1).replace('\\"', '"') if m else "",
         }
 
 
@@ -480,23 +625,33 @@ def normaler_durchlauf(client, unsplash_key):
     print(f"  NORMALER DURCHLAUF -- {jetzt_str}")
     print(f"{'=' * 60}")
 
-    schlagzeilen = schlagzeilen_abrufen()
+    alle = schlagzeilen_abrufen()
 
-    if not schlagzeilen:
+    if not alle:
         print("\nKeine Schlagzeilen gefunden. Bitte Internetverbindung prüfen.")
         logger.info("NORMAL DURCHLAUF: Keine Schlagzeilen gefunden.")
         return
 
-    print(f"\nAnalysiere {len(schlagzeilen)} Schlagzeilen mit Claude ...\n")
-    ergebnisse = []
-    uebersprungen = 0
+    # Schritt 1: Vage Headlines vorfiltern
+    gefiltert = [a for a in alle if not ist_zu_vage(a["headline"])]
+    uebersprungen = len(alle) - len(gefiltert)
+    if uebersprungen:
+        print(f"\n  {uebersprungen} Artikel wegen zu vager Headline übersprungen.")
 
-    for i, artikel in enumerate(schlagzeilen, 1):
-        if ist_zu_vage(artikel["headline"]):
-            print(f"  [{i}/{len(schlagzeilen)}] ÜBERSPRUNGEN (zu vage): {artikel['headline'][:70]}")
-            uebersprungen += 1
-            continue
-        print(f"  [{i}/{len(schlagzeilen)}] {artikel['headline'][:70]}...")
+    # Schritt 2: Clustering VOR der API-Analyse
+    print(f"\nClustere {len(gefiltert)} Artikel ...")
+    schlagzeilen_clustern(gefiltert)
+    synthetisierte_cluster = len({
+        a["cluster_id"] for a in gefiltert if a.get("cluster_size", 1) > 1
+    })
+    print(f"  {synthetisierte_cluster} Cluster mit 2+ Quellen erkannt.")
+
+    # Schritt 3: Claude-Analyse
+    print(f"\nAnalysiere {len(gefiltert)} Schlagzeilen mit Claude ...\n")
+    ergebnisse = []
+
+    for i, artikel in enumerate(gefiltert, 1):
+        print(f"  [{i}/{len(gefiltert)}] {artikel['headline'][:70]}...")
         try:
             analyse = analyse_mit_claude(client, artikel)
             kategorie = analyse.get("category", "Sonstiges")
@@ -508,7 +663,7 @@ def normaler_durchlauf(client, unsplash_key):
             if not image_url:
                 image_url = KATEGORIE_FALLBACK_BILDER.get(kategorie, "")
             ergebnisse.append({
-                "headline": artikel["headline"],
+                "headline": analyse.get("headline") or artikel["headline"],
                 "summary": analyse.get("summary", ""),
                 "source": artikel["source"],
                 "political_leaning": artikel["political_leaning"],
@@ -519,14 +674,86 @@ def normaler_durchlauf(client, unsplash_key):
                 "image_url": image_url,
                 "link": artikel["link"],
                 "timestamp": datetime.now().isoformat(),
+                "cluster_id": artikel["cluster_id"],
+                "cluster_size": artikel["cluster_size"],
+                "blindspot_label": artikel.get("blindspot_label", "Einzelmeldung"),
+                "blindspot_score": artikel.get("blindspot_score", 100),
+                "silent_spectrums": artikel.get("silent_spectrums", []),
+                "spectrum_count": artikel.get("spectrum_count", 0),
             })
             time.sleep(0.5)
         except Exception as fehler:
             print(f"    Fehler bei Analyse: {fehler}")
 
-    schlagzeilen_clustern(ergebnisse)
-    ergebnisse = pro_quelle_filtern(ergebnisse)
-    ergebnisse = feed_sortieren(ergebnisse)
+    # Schritt 4: Cluster-Synthese
+    print(f"\nSynthetisiere Cluster ...")
+    nach_cluster = defaultdict(list)
+    for a in ergebnisse:
+        nach_cluster[a["cluster_id"]].append(a)
+
+    finale_artikel = []
+    cluster_synthetisiert = 0
+
+    for cid, gruppe in nach_cluster.items():
+        if len(gruppe) == 1:
+            finale_artikel.append(gruppe[0])
+            continue
+
+        bester = max(gruppe, key=lambda x: x.get("relevance_score", 0))
+
+        try:
+            synthese = cluster_synthese_mit_sonnet(client, gruppe)
+            summary = synthese.get("summary", bester.get("summary", ""))
+            cluster_headline = synthese.get("headline") or bester["headline"]
+            if summary == "KEIN_CLUSTER":
+                for a in gruppe:
+                    a["cluster_size"] = 1
+                finale_artikel.extend(gruppe)
+                print(f"    ↳ Kein echter Cluster – {len(gruppe)} Artikel als Einzelmeldungen")
+                continue
+        except Exception as e:
+            print(f"    Synthese-Fehler Cluster {cid}: {e}")
+            summary = bester.get("summary", "")
+            cluster_headline = bester["headline"]
+
+        alle_quellen = ", ".join(dict.fromkeys(a["source"] for a in gruppe))
+        vorhandene_spektren = [s for s in ALLE_AUSRICHTUNGEN if any(a["political_leaning"] == s for a in gruppe)]
+        alle_spektren = ", ".join(vorhandene_spektren)
+        image_url = next((a["image_url"] for a in gruppe if a.get("image_url")), "")
+        if not image_url:
+            image_url = unsplash_bild_suchen(cluster_headline, bester["category"], unsplash_key)
+        if not image_url:
+            image_url = KATEGORIE_FALLBACK_BILDER.get(bester["category"], "")
+
+        finale_artikel.append({
+            "headline": cluster_headline,
+            "summary": summary,
+            "source": alle_quellen,
+            "political_leaning": alle_spektren,
+            "category": bester["category"],
+            "is_breaking": bester.get("is_breaking", False),
+            "relevance_score": bester.get("relevance_score", 50),
+            "is_top_story": bester.get("is_top_story", False),
+            "image_url": image_url,
+            "link": bester["link"],
+            "timestamp": bester["timestamp"],
+            "cluster_id": cid,
+            "cluster_size": bester["cluster_size"],
+            "blindspot_label": bester.get("blindspot_label", "Einzelmeldung"),
+            "blindspot_score": bester.get("blindspot_score", 100),
+            "silent_spectrums": bester.get("silent_spectrums", []),
+            "spectrum_count": len(vorhandene_spektren),
+        })
+        cluster_synthetisiert += 1
+        print(f"  ✓ Cluster: {len(gruppe)} Artikel → 1 Story  [{alle_quellen[:55]}]")
+
+    ergebnisse = feed_sortieren(finale_artikel)
+
+    # Sicherheitsnetz: Einzelartikel dürfen nie spectrum_count > 1 oder falsches Label haben
+    for a in ergebnisse:
+        if a.get("cluster_size", 1) == 1:
+            a["spectrum_count"] = 1
+            a["blindspot_label"] = "Einzelmeldung"
 
     dateiname = f"news_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(dateiname, "w", encoding="utf-8") as f:
@@ -538,15 +765,16 @@ def normaler_durchlauf(client, unsplash_key):
     scores = [a.get("relevance_score", 0) for a in ergebnisse]
     avg_score = round(sum(scores) / len(scores), 1) if scores else 0.0
 
-    print(f"\n Fertig! {len(ergebnisse)} Artikel gespeichert in: {dateiname}")
-    print(f" ({breaking_count} Breaking, {normal_count} Normal — weiche Quellen-Begrenzung)")
+    print(f"\n Fertig! {len(ergebnisse)} Stories gespeichert in: {dateiname}")
+    print(f" ({breaking_count} Breaking, {normal_count} Normal, {cluster_synthetisiert} Cluster synthetisiert)")
     if uebersprungen:
         print(f" ({uebersprungen} Artikel wegen zu vager Headline übersprungen)")
 
     print(f"\n{'─' * 60}")
     print(f"  LAUF-STATISTIK")
     print(f"{'─' * 60}")
-    print(f"  Gesamtanzahl Artikel:        {len(ergebnisse)}")
+    print(f"  Gesamtanzahl Stories:        {len(ergebnisse)}")
+    print(f"  Cluster synthetisiert:       {cluster_synthetisiert}")
     print(f"  is_top_story = true:         {top_story_count}")
     print(f"  Durchschnittlicher Score:    {avg_score}")
 
@@ -607,7 +835,8 @@ def normaler_durchlauf(client, unsplash_key):
             _zeige_artikel(artikel)
 
     logger.info(
-        f"NORMAL DURCHLAUF: {len(ergebnisse)} Artikel analysiert, "
+        f"NORMAL DURCHLAUF: {len(ergebnisse)} Stories, "
+        f"{cluster_synthetisiert} Cluster synthetisiert, "
         f"{uebersprungen} uebersprungen -> {dateiname}"
     )
     _zeige_naechsten_lauf()
@@ -756,31 +985,31 @@ def main():
     print("\nStarte initialen Durchlauf ...\n")
     normaler_durchlauf(client, unsplash_key)
 
-    # Schedules einrichten
-    for uhrzeit in NORMAL_ZEITEN:
-        schedule.every().day.at(uhrzeit).do(
-            normaler_durchlauf, client, unsplash_key
-        ).tag("normal")
+    # # Schedules einrichten
+    # for uhrzeit in NORMAL_ZEITEN:
+    #     schedule.every().day.at(uhrzeit).do(
+    #         normaler_durchlauf, client, unsplash_key
+    #     ).tag("normal")
 
-    schedule.every(BREAKING_INTERVALL_MIN).minutes.do(
-        breaking_news_check, client, unsplash_key
-    ).tag("breaking")
+    # schedule.every(BREAKING_INTERVALL_MIN).minutes.do(
+    #     breaking_news_check, client, unsplash_key
+    # ).tag("breaking")
 
-    _zeige_naechsten_lauf()
-    print("  Agent laeuft im Hintergrund. Beenden mit Strg+C.\n")
+    # _zeige_naechsten_lauf()
+    # print("  Agent laeuft im Hintergrund. Beenden mit Strg+C.\n")
 
-    letzter_status_ts = time.time()
-    try:
-        while True:
-            schedule.run_pending()
-            # Alle 30 Minuten Status-Erinnerung
-            if time.time() - letzter_status_ts >= 1800:
-                _zeige_naechsten_lauf()
-                letzter_status_ts = time.time()
-            time.sleep(30)
-    except KeyboardInterrupt:
-        print("\n\nAgent gestoppt (Strg+C).")
-        logger.info("News Agent gestoppt.")
+    # letzter_status_ts = time.time()
+    # try:
+    #     while True:
+    #         schedule.run_pending()
+    #         # Alle 30 Minuten Status-Erinnerung
+    #         if time.time() - letzter_status_ts >= 1800:
+    #             _zeige_naechsten_lauf()
+    #             letzter_status_ts = time.time()
+    #         time.sleep(30)
+    # except KeyboardInterrupt:
+    #     print("\n\nAgent gestoppt (Strg+C).")
+    #     logger.info("News Agent gestoppt.")
 
 
 if __name__ == "__main__":
