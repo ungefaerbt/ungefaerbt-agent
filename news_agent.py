@@ -15,7 +15,7 @@ import anthropic
 import schedule
 from dotenv import load_dotenv
 
-sys.stdout.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 load_dotenv()
 
 # ─── Logging (nur Datei, Terminal läuft via print) ───────────────
@@ -77,12 +77,32 @@ QUELLEN = {
     },
 }
 
+ALLE_AUSRICHTUNGEN = ["Links", "Mitte-Links", "Mitte", "Mitte-Rechts", "Rechts"]
+
+KATEGORIE_FALLBACK_BILDER = {
+    "Politik":      "https://images.unsplash.com/photo-1529107386315-e1a2ed48a620?w=800",
+    "Wirtschaft":   "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=800",
+    "Gesellschaft": "https://images.unsplash.com/photo-1541781774459-bb2af2f05b55?w=800",
+    "Technologie":  "https://images.unsplash.com/photo-1677442135703-1787eea5ce01?w=800",
+    "Sport":        "https://images.unsplash.com/photo-1461896836934-ffe607ba8211?w=800",
+    "Kultur":       "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800",
+    "Umwelt":       "https://images.unsplash.com/photo-1504711434969-e33886168f5c?w=800",
+    "International":"https://images.unsplash.com/photo-1529107386315-e1a2ed48a620?w=800",
+}
+
+KATEGORIE_REIHENFOLGE = [
+    "Politik", "Wirtschaft", "Gesellschaft", "International",
+    "Technologie", "Sport", "Kultur", "Umwelt",
+]
+
 SYSTEM_PROMPT = """Du bist ein neutraler Nachrichtenanalyst für das Projekt "ungefärbt".
 Deine Aufgabe: Nachrichtenüberschriften sachlich und ohne Wertung zusammenfassen.
 Regeln:
 - Nur belegbare Fakten, keine Meinungen oder Spekulationen
 - Klare, einfache Sprache auf Deutsch
 - 2–3 Sätze pro Zusammenfassung
+- relevance_score (0–100): Wichtigkeit für die deutschsprachige Öffentlichkeit
+- is_top_story: true nur für die bedeutendsten Meldungen des Tages (ca. 15–20 % aller Artikel)
 - Antworte ausschließlich mit dem angeforderten JSON, ohne weiteren Text"""
 
 
@@ -188,10 +208,36 @@ def schlagzeilen_clustern(artikel_liste):
         artikel["cluster_id"] = wurzeln[i]
         artikel["cluster_size"] = groessen[wurzeln[i]]
 
-    artikel_liste.sort(
-        key=lambda a: (a["cluster_size"], a.get("is_breaking", False)),
-        reverse=True,
-    )
+    # Spectrum-Analyse pro Cluster
+    cluster_gruppen = defaultdict(list)
+    for a in artikel_liste:
+        cluster_gruppen[a["cluster_id"]].append(a)
+
+    for gruppe in cluster_gruppen.values():
+        vorhandene = {a.get("political_leaning", "") for a in gruppe}
+        stille = [s for s in ALLE_AUSRICHTUNGEN if s not in vorhandene]
+        count = len(vorhandene & set(ALLE_AUSRICHTUNGEN))
+        score = round(len(stille) / len(ALLE_AUSRICHTUNGEN) * 100)
+
+        if not stille:
+            label = "Vollspektrum"
+        elif set(stille) <= {"Rechts", "Mitte-Rechts"}:
+            label = "Rechts-Blindspot"
+        elif set(stille) <= {"Links", "Mitte-Links"}:
+            label = "Links-Blindspot"
+        elif stille == ["Mitte"]:
+            label = "Mitte-Blindspot"
+        elif len(gruppe) == 1:
+            label = "Einzelmeldung"
+        else:
+            label = "Gemischter Blindspot"
+
+        for a in gruppe:
+            a["spectrum_count"] = count
+            a["silent_spectrums"] = stille
+            a["blindspot_score"] = score
+            a["blindspot_label"] = label
+
     return artikel_liste
 
 
@@ -209,6 +255,103 @@ def _cluster_fingerprint(artikel_list):
     counter = Counter(alle_woerter)
     top_woerter = sorted(w for w, _ in counter.most_common(5))
     return "|".join(top_woerter)
+
+
+def _artikel_staerke(a):
+    """Sortierschlüssel: höherer Score = stärker; Bild und lange Summary als Tiebreaker."""
+    return (
+        a.get("relevance_score", 0),
+        1 if a.get("image_url") else 0,
+        len(a.get("summary", "")),
+    )
+
+
+def pro_quelle_filtern(artikel_liste, max_immer=3, dominanz_schwelle=0.25):
+    """Weiche Quellen-Begrenzung:
+    - Breaking News: unbegrenzt
+    - Normale Artikel: bis 3 pro Quelle immer erlaubt
+    - Mehr als 3 nur entfernen wenn Quelle die Ausgabe dominiert (> 25 %)
+    - Bei Kürzung: schwächste Artikel zuerst entfernen
+    """
+    breaking = [a for a in artikel_liste if a.get("is_breaking", False)]
+    normal = [a for a in artikel_liste if not a.get("is_breaking", False)]
+
+    nach_quelle = defaultdict(list)
+    for a in normal:
+        nach_quelle[a["source"]].append(a)
+
+    # Innerhalb jeder Quelle: stärkste Artikel zuerst
+    for src in nach_quelle:
+        nach_quelle[src].sort(key=_artikel_staerke, reverse=True)
+
+    gesamt_normal = sum(len(arts) for arts in nach_quelle.values())
+
+    gefiltert = []
+    for src, arts in nach_quelle.items():
+        if len(arts) <= max_immer:
+            gefiltert.extend(arts)
+        else:
+            anteil = len(arts) / gesamt_normal if gesamt_normal else 0
+            if anteil > dominanz_schwelle:
+                gefiltert.extend(arts[:max_immer])
+            else:
+                gefiltert.extend(arts)
+
+    return breaking + gefiltert
+
+
+def feed_sortieren(artikel_liste):
+    """Abwechslungsreiche Sortierung:
+    - Breaking News ganz oben
+    - Dann Kategorien im Wechsel (KATEGORIE_REIHENFOLGE)
+    - Innerhalb jeder Kategorie: höchster relevance_score zuerst
+    - is_top_story Artikel gleichmäßig über den Feed verteilt
+    """
+    breaking = [a for a in artikel_liste if a.get("is_breaking", False)]
+    normal = [a for a in artikel_liste if not a.get("is_breaking", False)]
+
+    nach_kategorie = defaultdict(list)
+    for a in normal:
+        nach_kategorie[a.get("category", "Sonstiges")].append(a)
+
+    for kat in nach_kategorie:
+        nach_kategorie[kat].sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+
+    # Reihenfolge: erst definierte Kategorien, dann Restliche
+    cats = [k for k in KATEGORIE_REIHENFOLGE if k in nach_kategorie]
+    cats += [k for k in nach_kategorie if k not in KATEGORIE_REIHENFOLGE]
+
+    reihe = []
+    while any(nach_kategorie[k] for k in cats):
+        for kat in cats:
+            if nach_kategorie[kat]:
+                reihe.append(nach_kategorie[kat].pop(0))
+
+    # is_top_story gleichmäßig verteilen
+    top_stories = [a for a in reihe if a.get("is_top_story", False)]
+    non_top = [a for a in reihe if not a.get("is_top_story", False)]
+
+    if not top_stories:
+        return breaking + reihe
+
+    gesamt = len(reihe)
+    schritt = gesamt / len(top_stories)
+    ergebnis = []
+    top_idx = 0
+    non_top_idx = 0
+
+    for i in range(gesamt):
+        if top_idx < len(top_stories) and i >= round(top_idx * schritt):
+            ergebnis.append(top_stories[top_idx])
+            top_idx += 1
+        elif non_top_idx < len(non_top):
+            ergebnis.append(non_top[non_top_idx])
+            non_top_idx += 1
+
+    ergebnis.extend(top_stories[top_idx:])
+    ergebnis.extend(non_top[non_top_idx:])
+
+    return breaking + ergebnis
 
 
 def breaking_seen_laden():
@@ -244,7 +387,7 @@ def breaking_seen_speichern(seen):
 
 
 # ─── RSS-Abruf ──────────────────────────────────────────────────
-def schlagzeilen_abrufen(max_pro_quelle=2, gesamt_limit=10, verbose=True):
+def schlagzeilen_abrufen(max_pro_quelle=5, gesamt_limit=None, verbose=True):
     alle = []
     if verbose:
         print("\nRufe RSS-Feeds ab ...")
@@ -287,8 +430,10 @@ Headline: "{schlagzeile['headline']}"{teaser_block}
 Antworte NUR mit diesem JSON (kein weiterer Text):
 {{
   "summary": "Neutrale Zusammenfassung in 2–3 Sätzen.",
-  "category": "Eines von: Politik / Wirtschaft / Gesellschaft / Technologie / Sport / Kultur / Umwelt",
-  "is_breaking": false
+  "category": "Eines von: Politik / Wirtschaft / Gesellschaft / International / Technologie / Sport / Kultur / Umwelt",
+  "is_breaking": false,
+  "relevance_score": 65,
+  "is_top_story": false
 }}"""
 
     antwort = client.messages.create(
@@ -315,21 +460,25 @@ Antworte NUR mit diesem JSON (kein weiterer Text):
         summary_match = re.search(r'"summary"\s*:\s*"(.*?)"(?=\s*,\s*"|\s*\})', text, re.DOTALL)
         category_match = re.search(r'"category"\s*:\s*"([^"]+)"', text)
         breaking_match = re.search(r'"is_breaking"\s*:\s*(true|false)', text)
+        score_match = re.search(r'"relevance_score"\s*:\s*(\d+)', text)
+        top_match = re.search(r'"is_top_story"\s*:\s*(true|false)', text)
         if not summary_match:
             raise
         return {
             "summary": summary_match.group(1).replace('\\"', '"'),
             "category": category_match.group(1) if category_match else "Sonstiges",
             "is_breaking": breaking_match.group(1) == "true" if breaking_match else False,
+            "relevance_score": int(score_match.group(1)) if score_match else 50,
+            "is_top_story": top_match.group(1) == "true" if top_match else False,
         }
 
 
 # ─── Durchläufe ─────────────────────────────────────────────────
 def normaler_durchlauf(client, unsplash_key):
     jetzt_str = datetime.now().strftime('%Y-%m-%d %H:%M')
-    print(f"\n{'═' * 60}")
-    print(f"  NORMALER DURCHLAUF – {jetzt_str}")
-    print(f"{'═' * 60}")
+    print(f"\n{'=' * 60}")
+    print(f"  NORMALER DURCHLAUF -- {jetzt_str}")
+    print(f"{'=' * 60}")
 
     schlagzeilen = schlagzeilen_abrufen()
 
@@ -356,6 +505,8 @@ def normaler_durchlauf(client, unsplash_key):
                 image_url = unsplash_bild_suchen(artikel["headline"], kategorie, unsplash_key)
                 if image_url:
                     print(f"    Unsplash-Bild gefunden.")
+            if not image_url:
+                image_url = KATEGORIE_FALLBACK_BILDER.get(kategorie, "")
             ergebnisse.append({
                 "headline": artikel["headline"],
                 "summary": analyse.get("summary", ""),
@@ -363,6 +514,8 @@ def normaler_durchlauf(client, unsplash_key):
                 "political_leaning": artikel["political_leaning"],
                 "category": kategorie,
                 "is_breaking": analyse.get("is_breaking", False),
+                "relevance_score": analyse.get("relevance_score", 50),
+                "is_top_story": analyse.get("is_top_story", False),
                 "image_url": image_url,
                 "link": artikel["link"],
                 "timestamp": datetime.now().isoformat(),
@@ -372,39 +525,86 @@ def normaler_durchlauf(client, unsplash_key):
             print(f"    Fehler bei Analyse: {fehler}")
 
     schlagzeilen_clustern(ergebnisse)
+    ergebnisse = pro_quelle_filtern(ergebnisse)
+    ergebnisse = feed_sortieren(ergebnisse)
 
     dateiname = f"news_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(dateiname, "w", encoding="utf-8") as f:
         json.dump(ergebnisse, f, ensure_ascii=True, indent=2)
 
-    print(f"\n Fertig! {len(ergebnisse)} Artikel gespeichert in: {dateiname}")
-    if uebersprungen:
-        print(f" ({uebersprungen} Artikel wegen zu vager Headline übersprungen)\n")
-    else:
-        print()
+    breaking_count = sum(1 for a in ergebnisse if a.get("is_breaking", False))
+    top_story_count = sum(1 for a in ergebnisse if a.get("is_top_story", False))
+    normal_count = len(ergebnisse) - breaking_count
+    scores = [a.get("relevance_score", 0) for a in ergebnisse]
+    avg_score = round(sum(scores) / len(scores), 1) if scores else 0.0
 
-    print("─" * 60)
-    letzter_cluster_id = None
-    einzelmeldungen_gezeigt = False
-    for artikel in ergebnisse:
-        cluster_id = artikel["cluster_id"]
-        cluster_size = artikel["cluster_size"]
-        if cluster_size > 1:
-            if cluster_id != letzter_cluster_id:
-                fueller = "─" * (44 - len(str(cluster_size)))
-                print(f"\n── {cluster_size} Quellen berichten {fueller}")
-            letzter_cluster_id = cluster_id
-        else:
-            if not einzelmeldungen_gezeigt:
-                print("\n── Einzelmeldungen " + "─" * 41)
-                einzelmeldungen_gezeigt = True
+    print(f"\n Fertig! {len(ergebnisse)} Artikel gespeichert in: {dateiname}")
+    print(f" ({breaking_count} Breaking, {normal_count} Normal — weiche Quellen-Begrenzung)")
+    if uebersprungen:
+        print(f" ({uebersprungen} Artikel wegen zu vager Headline übersprungen)")
+
+    print(f"\n{'─' * 60}")
+    print(f"  LAUF-STATISTIK")
+    print(f"{'─' * 60}")
+    print(f"  Gesamtanzahl Artikel:        {len(ergebnisse)}")
+    print(f"  is_top_story = true:         {top_story_count}")
+    print(f"  Durchschnittlicher Score:    {avg_score}")
+
+    top_beispiel = next((a for a in ergebnisse if a.get("is_top_story")), None)
+    if top_beispiel:
+        print(f"\n  Beispiel Top Story:")
+        print(f"    Headline:   {top_beispiel['headline'][:65]}")
+        print(f"    Kategorie:  {top_beispiel['category']}")
+        print(f"    Score:      {top_beispiel.get('relevance_score', '–')}")
+        print(f"    Blindspot:  {top_beispiel.get('blindspot_label', '–')}")
+        print(f"    Cluster:    {top_beispiel.get('cluster_size', 1)} Quelle(n)")
+        print(f"    Bild:       {'ja' if top_beispiel.get('image_url') else 'nein'}")
+    print(f"{'─' * 60}\n")
+
+    print("-" * 60)
+
+    breaking_artikel = [a for a in ergebnisse if a.get("is_breaking", False)]
+    multi_artikel = [a for a in ergebnisse if not a.get("is_breaking", False) and a["cluster_size"] > 1]
+    einzel_artikel = [a for a in ergebnisse if not a.get("is_breaking", False) and a["cluster_size"] == 1]
+
+    def _zeige_artikel(artikel, breaking=False):
         leaning = artikel["political_leaning"].ljust(12)
         kategorie = artikel["category"].ljust(15)
-        breaking = " *** BREAKING ***" if artikel["is_breaking"] else ""
-        print(f"[{leaning}] [{kategorie}]{breaking}")
+        breaking_label = " *** BREAKING ***" if breaking else ""
+        print(f"[{leaning}] [{kategorie}]{breaking_label}")
         print(f"  {artikel['headline']}")
         print(f"  {artikel['source']}")
         print()
+
+    if breaking_artikel:
+        print("\n" + "*" * 60)
+        print("  *** BREAKING NEWS ***")
+        print("*" * 60)
+        letzter_cluster_id = None
+        for artikel in breaking_artikel:
+            cluster_id = artikel["cluster_id"]
+            cluster_size = artikel["cluster_size"]
+            if cluster_size > 1 and cluster_id != letzter_cluster_id:
+                fueller = "-" * (44 - len(str(cluster_size)))
+                print(f"\n-- {cluster_size} Quellen berichten {fueller}")
+            letzter_cluster_id = cluster_id
+            _zeige_artikel(artikel, breaking=True)
+
+    if multi_artikel:
+        letzter_cluster_id = None
+        for artikel in multi_artikel:
+            cluster_id = artikel["cluster_id"]
+            cluster_size = artikel["cluster_size"]
+            if cluster_id != letzter_cluster_id:
+                fueller = "-" * (44 - len(str(cluster_size)))
+                print(f"\n-- {cluster_size} Quellen berichten {fueller}")
+            letzter_cluster_id = cluster_id
+            _zeige_artikel(artikel)
+
+    if einzel_artikel:
+        print("\n-- Einzelmeldungen " + "-" * 41)
+        for artikel in einzel_artikel:
+            _zeige_artikel(artikel)
 
     logger.info(
         f"NORMAL DURCHLAUF: {len(ergebnisse)} Artikel analysiert, "
@@ -478,6 +678,8 @@ def breaking_news_check(client, unsplash_key):
             bild = unsplash_bild_suchen(
                 bester["headline"], analyse.get("category", ""), unsplash_key
             )
+        if not bild:
+            bild = KATEGORIE_FALLBACK_BILDER.get(analyse.get("category", ""), "")
 
         ergebnisse.append({
             "headline": bester["headline"],
@@ -487,6 +689,8 @@ def breaking_news_check(client, unsplash_key):
             "category": analyse.get("category", "Sonstiges"),
             "is_breaking": True,
             "breaking_sources": sorted(quellen),
+            "relevance_score": analyse.get("relevance_score", 80),
+            "is_top_story": analyse.get("is_top_story", True),
             "image_url": bild,
             "link": bester["link"],
             "timestamp": jetzt.isoformat(),
@@ -515,7 +719,7 @@ def _zeige_naechsten_lauf():
     normal_jobs = schedule.get_jobs("normal")
     breaking_jobs = schedule.get_jobs("breaking")
     jetzt = datetime.now()
-    print("\n" + "─" * 60)
+    print("\n" + "-" * 60)
     if breaking_jobs:
         naechster = min(j.next_run for j in breaking_jobs)
         diff_min = max(0, int((naechster - jetzt).total_seconds() / 60))
@@ -524,7 +728,7 @@ def _zeige_naechsten_lauf():
         naechster = min(j.next_run for j in normal_jobs)
         diff_min = max(0, int((naechster - jetzt).total_seconds() / 60))
         print(f"  Normal-Durchlauf:    {naechster.strftime('%H:%M')} Uhr  (in {diff_min} Min.)")
-    print("─" * 60)
+    print("-" * 60)
 
 
 # ─── Einstiegspunkt ─────────────────────────────────────────────
