@@ -44,6 +44,42 @@ QUELLEN = {
         "rss": "https://www.handelsblatt.com/contentexport/feed/schlagzeilen",
         "ausrichtung": "Mitte-Rechts"
     },
+    "augsburger-allgemeine.de": {
+        "rss": "https://www.augsburger-allgemeine.de/rss",
+        "ausrichtung": "Mitte-Links"
+    },
+    "heise.de": {
+        "rss": "https://www.heise.de/rss/heise-atom.xml",
+        "ausrichtung": "Mitte"
+    },
+    "t3n.de": {
+        "rss": "https://t3n.de/rss.xml",
+        "ausrichtung": "Mitte"
+    },
+    "golem.de": {
+        "rss": "https://www.golem.de/rss",
+        "ausrichtung": "Mitte"
+    },
+    "capital.de": {
+        "rss": "https://www.capital.de/feed",
+        "ausrichtung": "Mitte-Rechts"
+    },
+    "manager-magazin.de": {
+        "rss": "https://www.manager-magazin.de/rss",
+        "ausrichtung": "Mitte-Rechts"
+    },
+    "kicker.de": {
+        "rss": "https://www.kicker.de/rss/fussball.xml",
+        "ausrichtung": "Mitte"
+    },
+    "sportschau.de": {
+        "rss": "https://www.sportschau.de/rss.xml",
+        "ausrichtung": "Mitte"
+    },
+    "correctiv.org": {
+        "rss": "https://correctiv.org/feed/",
+        "ausrichtung": "Links"
+    },
 }
 
 ALLE_AUSRICHTUNGEN = ["Links", "Mitte-Links", "Mitte", "Mitte-Rechts", "Rechts"]
