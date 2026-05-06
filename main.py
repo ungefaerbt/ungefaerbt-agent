@@ -90,7 +90,7 @@ def normaler_durchlauf(client, unsplash_key):
             kategorie = analyse.get("category", "Sonstiges")
             image_url = artikel["image_url"]
             if not image_url:
-                image_url = unsplash_bild_suchen(artikel["headline"], kategorie, unsplash_key)
+                image_url = unsplash_bild_suchen(client, artikel["headline"], kategorie, unsplash_key)
                 if image_url:
                     print(f"    Unsplash-Bild gefunden.")
             if not image_url:
@@ -154,7 +154,7 @@ def normaler_durchlauf(client, unsplash_key):
         alle_spektren = ", ".join(vorhandene_spektren)
         image_url = next((a["image_url"] for a in gruppe if a.get("image_url")), "")
         if not image_url:
-            image_url = unsplash_bild_suchen(cluster_headline, bester["category"], unsplash_key)
+            image_url = unsplash_bild_suchen(client, cluster_headline, bester["category"], unsplash_key)
         if not image_url:
             image_url = KATEGORIE_FALLBACK_BILDER.get(bester["category"], "")
 
