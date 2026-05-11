@@ -1,23 +1,55 @@
 import json
 import logging
 import os
+import subprocess
+import sys
 import time
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 
 from config import (
     ALLE_AUSRICHTUNGEN,
     BREAKING_QUELLEN_SCHWELLE,
     BREAKING_SEEN_DATEI,
-    KATEGORIE_FALLBACK_BILDER,
 )
 from cluster import _cluster_fingerprint, schlagzeilen_clustern
 from fetcher import schlagzeilen_abrufen
 from filter import ist_zu_vage
-from images import unsplash_bild_suchen
 from writer import analyse_mit_claude
 
 logger = logging.getLogger("news_agent")
+
+
+def breaking_bilder_anreichern(input_datei):
+    """Reichert eine Breaking-JSON mit dem separaten Image-Agent an."""
+    image_agent = Path(__file__).resolve().parent / "image-agent" / "image_agent.py"
+    if not image_agent.exists():
+        print("  Warnung: image-agent/image_agent.py nicht gefunden. Bildanreicherung übersprungen.")
+        logger.warning("Breaking-Bildanreicherung übersprungen: image_agent.py nicht gefunden.")
+        return None
+
+    input_path = Path(input_datei)
+    output_path = input_path.with_name(f"{input_path.stem}_with_images{input_path.suffix}")
+    befehl = [
+        sys.executable,
+        str(image_agent),
+        "--input",
+        str(input_path),
+        "--output",
+        str(output_path),
+        "--sync-image-url",
+    ]
+
+    try:
+        subprocess.run(befehl, check=True)
+        print(f"  Breaking-Bilder gespeichert in: {output_path.name}")
+        logger.info(f"BREAKING IMAGE AGENT: {input_path.name} -> {output_path.name}")
+        return str(output_path)
+    except Exception as e:
+        print(f"  Warnung: Image-Agent konnte Breaking-Datei nicht anreichern: {e}")
+        logger.warning(f"Breaking-Bildanreicherung fehlgeschlagen: {e}")
+        return None
 
 
 def breaking_seen_laden():
@@ -52,7 +84,7 @@ def breaking_seen_speichern(seen):
         print(f"  Warnung: {BREAKING_SEEN_DATEI} konnte nicht gespeichert werden: {e}")
 
 
-def breaking_news_check(client, unsplash_key, on_complete=None):
+def breaking_news_check(client, on_complete=None):
     jetzt = datetime.now()
     print(f"\n[{jetzt.strftime('%H:%M')}] Breaking-News-Check ...", end="", flush=True)
 
@@ -112,12 +144,6 @@ def breaking_news_check(client, unsplash_key, on_complete=None):
             print(f"      Claude-Fehler: {e}")
             continue
 
-        bild = unsplash_bild_suchen(
-            client, bester["headline"], analyse.get("category", ""), unsplash_key
-        )
-        if not bild:
-            bild = KATEGORIE_FALLBACK_BILDER.get(analyse.get("category", ""), "")
-
         ergebnisse.append({
             "headline": bester["headline"],
             "summary": analyse.get("summary", ""),
@@ -128,7 +154,7 @@ def breaking_news_check(client, unsplash_key, on_complete=None):
             "breaking_sources": sorted(quellen),
             "relevance_score": analyse.get("relevance_score", 80),
             "is_top_story": analyse.get("is_top_story", True),
-            "image_url": bild,
+            "image_url": "",
             "link": bester["link"],
             "timestamp": jetzt.isoformat(),
         })
@@ -143,6 +169,7 @@ def breaking_news_check(client, unsplash_key, on_complete=None):
         with open(dateiname, "w", encoding="utf-8") as f:
             json.dump(ergebnisse, f, ensure_ascii=True, indent=2)
         print(f"\n  {len(ergebnisse)} Breaking News gespeichert in: {dateiname}")
+        breaking_bilder_anreichern(dateiname)
         logger.info(
             f"BREAKING CHECK: {len(ergebnisse)} neue Stories gespeichert -> {dateiname}"
         )

@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 from config import (
     ALLE_AUSRICHTUNGEN,
     BREAKING_INTERVALL_MIN,
-    KATEGORIE_FALLBACK_BILDER,
     NORMAL_ZEITEN,
 )
 from breaking import breaking_news_check
@@ -21,7 +20,6 @@ from cluster import schlagzeilen_clustern
 from fingerprint import fingerprint_erstellen
 from fetcher import schlagzeilen_abrufen
 from filter import ist_zu_vage
-from images import unsplash_bild_suchen
 from sorter import feed_sortieren
 from writer import klassifizieren_mit_haiku, cluster_synthese_mit_sonnet
 
@@ -53,7 +51,7 @@ def _zeige_naechsten_lauf():
     print("-" * 60)
 
 
-def normaler_durchlauf(client, unsplash_key):
+def normaler_durchlauf(client):
     jetzt_str = datetime.now().strftime('%Y-%m-%d %H:%M')
     print(f"\n{'=' * 60}")
     print(f"  NORMALER DURCHLAUF -- {jetzt_str}")
@@ -95,8 +93,8 @@ def normaler_durchlauf(client, unsplash_key):
     print(f"\nClustere {len(gefiltert)} Artikel ...")
     schlagzeilen_clustern(gefiltert)
 
-    # Nur Artikel in echten Clustern (2+ Quellen) weiterverarbeiten
-    gefiltert = [a for a in gefiltert if a.get("cluster_size", 1) > 1]
+    # Nur Artikel in echten Clustern (2+ unterschiedliche Quellen) weiterverarbeiten
+    gefiltert = [a for a in gefiltert if a.get("cluster_source_count", a.get("cluster_size", 1)) > 1]
     synthetisierte_cluster = len({a["cluster_id"] for a in gefiltert})
     print(f"  {synthetisierte_cluster} Cluster mit 2+ Quellen erkannt.")
     print(f"  {len(gefiltert)} Artikel in Clustern weiterverarbeitet (Einzelmeldungen verworfen).")
@@ -161,9 +159,7 @@ def normaler_durchlauf(client, unsplash_key):
         alle_quellen = ", ".join(dict.fromkeys(a["source"] for a in gruppe))
         vorhandene_spektren = [s for s in ALLE_AUSRICHTUNGEN if any(a["political_leaning"] == s for a in gruppe)]
         alle_spektren = ", ".join(vorhandene_spektren)
-        image_url = unsplash_bild_suchen(client, cluster_headline, bester["category"], unsplash_key)
-        if not image_url:
-            image_url = KATEGORIE_FALLBACK_BILDER.get(bester["category"], "")
+        cluster_quellen_count = len(dict.fromkeys(a["source"] for a in gruppe))
 
         finale_artikel.append({
             "headline": cluster_headline,
@@ -174,11 +170,12 @@ def normaler_durchlauf(client, unsplash_key):
             "is_breaking": bester.get("is_breaking", False),
             "relevance_score": bester.get("relevance_score", 50),
             "is_top_story": bester.get("is_top_story", False),
-            "image_url": image_url,
+            "image_url": "",
             "link": bester["link"],
             "timestamp": bester["timestamp"],
             "cluster_id": cid,
-            "cluster_size": bester["cluster_size"],
+            "cluster_size": cluster_quellen_count,
+            "cluster_article_count": len(gruppe),
             "blindspot_label": bester.get("blindspot_label", "Einzelmeldung"),
             "blindspot_score": bester.get("blindspot_score", 100),
             "silent_spectrums": bester.get("silent_spectrums", []),
@@ -278,29 +275,28 @@ def main():
         print("Zeile in .env: ANTHROPIC_API_KEY=dein-key-hier\n")
         return
 
-    unsplash_key = os.getenv("UNSPLASH_ACCESS_KEY", "").strip()
     client = anthropic.Anthropic(api_key=api_key)
 
     print("\n" + "=" * 60)
     print("  UNGEFAERBT NEWS AGENT  –  Scheduling aktiv")
     print(f"  Normal-Durchlauf:     {', '.join(NORMAL_ZEITEN)} Uhr")
     print(f"  Breaking-News-Check:  alle {BREAKING_INTERVALL_MIN} Minuten")
-    print(f"  Unsplash-Fallback:    {'aktiv' if unsplash_key else 'inaktiv'}")
+    print("  Bildsuche:            ausgelagert an image-agent")
     print(f"  Log-Datei:            log.txt")
     print("=" * 60)
     logger.info("News Agent gestartet.")
 
     print("\nStarte initialen Durchlauf ...\n")
-    normaler_durchlauf(client, unsplash_key)
+    normaler_durchlauf(client)
 
     # # Schedules einrichten
     # for uhrzeit in NORMAL_ZEITEN:
     #     schedule.every().day.at(uhrzeit).do(
-    #         normaler_durchlauf, client, unsplash_key
+    #         normaler_durchlauf, client
     #     ).tag("normal")
 
     # schedule.every(BREAKING_INTERVALL_MIN).minutes.do(
-    #     breaking_news_check, client, unsplash_key, _zeige_naechsten_lauf
+    #     breaking_news_check, client, _zeige_naechsten_lauf
     # ).tag("breaking")
 
     # _zeige_naechsten_lauf()

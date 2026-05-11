@@ -34,6 +34,7 @@ def schlagzeilen_abrufen(max_pro_quelle=5, gesamt_limit=None, verbose=True):
                     "headline": eintrag.get("title", "").strip(),
                     "teaser": teaser,
                     "link": eintrag.get("link", ""),
+                    "published_at": eintrag.get("published", "") or eintrag.get("updated", ""),
                     "image_url": "",
                     "source": name,
                     "political_leaning": daten["ausrichtung"],
