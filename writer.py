@@ -3,15 +3,78 @@ import re
 
 from config import SYSTEM_PROMPT
 
+# ---------------------------------------------------------------------------
+# Hilfsfunktion: JSON sauber parsen
+# ---------------------------------------------------------------------------
 
-def klassifizieren_mit_haiku(client, schlagzeile):
+def _parse_json(text: str, pflichtfelder: list[str]) -> dict:
+    """
+    Parst JSON aus dem Modell-Output.
+    Entfernt Markdown-Blöcke falls vorhanden.
+    Fällt auf Regex zurück wenn JSON ungültig ist.
+    Wirft einen Fehler wenn Pflichtfelder fehlen.
+    """
+    # Markdown-Blöcke entfernen
+    if "```" in text:
+        parts = text.split("```")
+        # Nimm den ersten Block nach dem ersten ```
+        text = parts[1]
+        if text.startswith("json"):
+            text = text[4:]
+    text = text.strip()
+
+    # Direktes Parsen versuchen
+    try:
+        ergebnis = json.loads(text)
+    except json.JSONDecodeError:
+        # Regex-Fallback: alle bekannten Felder extrahieren
+        ergebnis = {}
+        for feld in pflichtfelder:
+            # Strings
+            match = re.search(
+                rf'"{feld}"\s*:\s*"(.*?)"(?=\s*[,}}])', text, re.DOTALL
+            )
+            if match:
+                ergebnis[feld] = match.group(1).replace('\\"', '"')
+                continue
+            # Booleans
+            match = re.search(rf'"{feld}"\s*:\s*(true|false)', text)
+            if match:
+                ergebnis[feld] = match.group(1) == "true"
+                continue
+            # Zahlen
+            match = re.search(rf'"{feld}"\s*:\s*(\d+)', text)
+            if match:
+                ergebnis[feld] = int(match.group(1))
+
+    # Prüfen ob alle Pflichtfelder vorhanden sind
+    fehlend = [f for f in pflichtfelder if f not in ergebnis]
+    if fehlend:
+        raise ValueError(
+            f"Modell-Antwort enthält nicht alle Pflichtfelder. "
+            f"Fehlend: {fehlend}. Rohtext: {text[:300]}"
+        )
+
+    return ergebnis
+
+
+# ---------------------------------------------------------------------------
+# Klassifizierung (Haiku) — schnell & günstig, nur Metadaten
+# ---------------------------------------------------------------------------
+
+def klassifizieren_mit_haiku(client, artikel: dict) -> dict:
+    """
+    Klassifiziert einen Artikel nach Kategorie, Relevanz und Breaking-Status.
+    Wird für ALLE Artikel aufgerufen — auch für spätere Cluster-Artikel.
+    Kein Sonnet, kein Summary hier.
+    """
     teaser_block = ""
-    if schlagzeile.get("teaser"):
-        teaser_block = f'\nBeschreibung: "{schlagzeile["teaser"]}"\n'
+    if artikel.get("teaser"):
+        teaser_block = f'\nBeschreibung: "{artikel["teaser"]}"\n'
 
-    nutzer_nachricht = f"""Klassifiziere diesen Nachrichtenartikel von {schlagzeile['source']}:
+    prompt = f"""Klassifiziere diesen Nachrichtenartikel:
 
-Headline: "{schlagzeile['headline']}"{teaser_block}
+Headline: "{artikel['headline']}"{teaser_block}
 
 Antworte NUR mit diesem JSON (kein weiterer Text):
 {{
@@ -24,137 +87,117 @@ Antworte NUR mit diesem JSON (kein weiterer Text):
     antwort = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=150,
-        system=[
-            {
-                "type": "text",
-                "text": SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"}
-            }
-        ],
-        messages=[{"role": "user", "content": nutzer_nachricht}]
+        system=[{
+            "type": "text",
+            "text": SYSTEM_PROMPT,
+            "cache_control": {"type": "ephemeral"}
+        }],
+        messages=[{"role": "user", "content": prompt}]
     )
 
     text = antwort.content[0].text.strip()
-    if "```" in text:
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
+
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        category_match = re.search(r'"category"\s*:\s*"([^"]+)"', text)
-        breaking_match = re.search(r'"is_breaking"\s*:\s*(true|false)', text)
-        score_match = re.search(r'"relevance_score"\s*:\s*(\d+)', text)
-        top_match = re.search(r'"is_top_story"\s*:\s*(true|false)', text)
+        return _parse_json(text, ["category", "is_breaking", "relevance_score", "is_top_story"])
+    except (ValueError, Exception):
+        # Sicherer Fallback — Klassifizierung ist nie ein Blocker
         return {
-            "category": category_match.group(1) if category_match else "Sonstiges",
-            "is_breaking": breaking_match.group(1) == "true" if breaking_match else False,
-            "relevance_score": int(score_match.group(1)) if score_match else 50,
-            "is_top_story": top_match.group(1) == "true" if top_match else False,
+            "category": "Sonstiges",
+            "is_breaking": False,
+            "relevance_score": 50,
+            "is_top_story": False,
         }
 
 
-def zusammenfassen_mit_sonnet(client, schlagzeile):
-    teaser_block = ""
-    if schlagzeile.get("teaser"):
-        teaser_block = f'\nBeschreibung: "{schlagzeile["teaser"]}"\n'
+# ---------------------------------------------------------------------------
+# Cluster-Synthese (Sonnet) — das Herzstück
+# ---------------------------------------------------------------------------
 
-    nutzer_nachricht = f"""Fasse diesen Nachrichtenartikel von {schlagzeile['source']} zusammen:
+SYNTHESE_PROMPT = """\
+Du bist Redakteur bei "ungefärbt" — einem Nachrichtenmedium das ausschließlich \
+faktenbasiert berichtet. Deine Aufgabe: Mehrere Berichte über dasselbe Ereignis \
+zu einer einzigen klaren, neutralen Story zusammenfassen.
 
-Headline: "{schlagzeile['headline']}"{teaser_block}
+Deine Grundsätze:
+- Nur belegbare Fakten. Keine Meinung, keine Wertung, keine Interpretation.
+- Keine politische Färbung in keine Richtung.
+- Verweise NIE auf andere Quellen. Kein "laut Spiegel", kein "wie berichtet wird", \
+kein "einem Bericht zufolge". Du bist der Journalist — du kennst die Fakten.
+- Übernimm nie Formulierungen 1:1 aus den Quellen. Schreibe alles neu in deiner eigenen Sprache.
+- Schreibe klar und direkt — verständlich für jeden, aber nicht monoton. \
+Informativ und trotzdem angenehm zu lesen.
+- Keine Ausrufezeichen, kein Clickbait, keine reißerischen Formulierungen.
+"""
 
-Falls der Artikel kein seriöser Nachrichtenartikel ist (Satire, Werbung, fiktiver Inhalt, kein journalistischer Nachrichtenwert), antworte NUR mit:
-{{"summary": "KEIN_ARTIKEL"}}
+def cluster_synthese_mit_sonnet(client, cluster_artikel: list[dict]) -> dict:
+    """
+    Synthetisiert 2+ Artikel desselben Clusters zu einer einzigen ungefärbten Story.
+    
+    Gibt zurück:
+        {"headline": str, "summary": str}
+    oder:
+        {"summary": "KEIN_CLUSTER"} wenn die Artikel nicht dasselbe Ereignis beschreiben.
+    
+    Wirft eine Exception bei API-Fehler (Aufrufer soll entscheiden wie er damit umgeht).
+    """
+    if len(cluster_artikel) < 2:
+        raise ValueError(
+            f"cluster_synthese_mit_sonnet erwartet mindestens 2 Artikel, "
+            f"bekommen: {len(cluster_artikel)}"
+        )
 
-Andernfalls schreibe eine eigene sachliche Headline auf Deutsch in max. 10 Wörtern. Keine Meinung, keine Wertung, keine Ausrufezeichen, kein Clickbait. Nur belegbare Fakten.
+    # Artikel-Texte aufbereiten — ohne political_leaning, nur Inhalt zählt
+    artikel_texte = []
+    for i, a in enumerate(cluster_artikel, 1):
+        zeilen = [f"Bericht {i}:"]
+        zeilen.append(f'Headline: "{a["headline"]}"')
+        if a.get("teaser"):
+            zeilen.append(f'Beschreibung: "{a["teaser"]}"')
+        if a.get("summary"):
+            zeilen.append(f'Zusammenfassung: {a["summary"]}')
+        artikel_texte.append("\n".join(zeilen))
 
-Regeln für Headline und Summary:
-- Verweise NIE auf die Quelle im Text
-- Keine Formulierungen wie "Laut Spiegel", "Der Artikel beschreibt", "Wie berichtet wird", "Laut einem Bericht"
-- Schreibe als würdest DU der Journalist sein der die Fakten kennt
+    anzahl = len(cluster_artikel)
+    artikel_block = "\n\n".join(artikel_texte)
+
+    prompt = f"""Hier sind {anzahl} Berichte. Prüfe zuerst: Beschreiben sie dasselbe konkrete Ereignis?
+
+{artikel_block}
+
+Falls NEIN — sie beschreiben verschiedene Ereignisse — antworte ausschließlich mit:
+{{"summary": "KEIN_CLUSTER"}}
+
+Falls JA — schreibe:
+1. Eine eigene Headline auf Deutsch (max. 10 Wörter). \
+Sachlich, klar, kein Clickbait, keine Meinung.
+2. Eine Zusammenfassung in 2–3 Sätzen. \
+Nur Fakten. Keine Quellenverweise. Deine eigene Sprache.
 
 Antworte NUR mit diesem JSON (kein weiterer Text):
 {{
-  "headline": "Eigene neutrale Headline",
-  "summary": "Neutrale Zusammenfassung in 2–3 Sätzen."
+  "headline": "Deine neutrale Headline",
+  "summary": "Deine neutrale Zusammenfassung in 2–3 Sätzen."
 }}"""
 
     antwort = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=300,
-        system=[
-            {
-                "type": "text",
-                "text": SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"}
-            }
-        ],
-        messages=[{"role": "user", "content": nutzer_nachricht}]
-    )
-
-    text = antwort.content[0].text.strip()
-    if "```" in text:
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        headline_match = re.search(r'"headline"\s*:\s*"(.*?)"(?=\s*,\s*"|\s*\})', text, re.DOTALL)
-        summary_match = re.search(r'"summary"\s*:\s*"(.*?)"(?=\s*,\s*"|\s*\})', text, re.DOTALL)
-        if not summary_match:
-            raise
-        return {
-            "headline": headline_match.group(1).replace('\\"', '"') if headline_match else "",
-            "summary": summary_match.group(1).replace('\\"', '"'),
-        }
-
-
-def cluster_synthese_mit_sonnet(client, cluster_artikel):
-    """Synthetisiert mehrere Cluster-Artikel zu einer einzigen neutralen Zusammenfassung."""
-    artikel_texte = []
-    for i, a in enumerate(cluster_artikel, 1):
-        artikel_texte.append(
-            f"Quelle {i} ({a['source']}, {a['political_leaning']}):\n"
-            f"Headline: \"{a['headline']}\"\n"
-            f"Zusammenfassung: {a.get('summary', '')}"
-        )
-
-    nutzer_nachricht = (
-        f"Synthetisiere folgende {len(cluster_artikel)} Berichte über dasselbe Ereignis "
-        f"zu einer einzigen neutralen Zusammenfassung:\n\n"
-        + "\n\n".join(artikel_texte)
-        + "\n\nFalls die Artikel NICHT dasselbe Ereignis beschreiben, antworte ausschließlich mit:\n"
-        '{"summary": "KEIN_CLUSTER"}\n\n'
-        "Andernfalls schreibe auch eine eigene sachliche Headline auf Deutsch in max. 10 Wörtern "
-        "(keine Meinung, kein Clickbait, nur belegbare Fakten) und antworte NUR mit diesem JSON:\n"
-        '{\n  "headline": "Eigene neutrale Headline",\n  "summary": "Neutrale Synthese in 2–3 Sätzen ohne eine Meinung."\n}'
-    )
-
-    antwort = client.messages.create(
-        model="claude-sonnet-4-6",
         max_tokens=400,
-        system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": nutzer_nachricht}]
+        system=[{
+            "type": "text",
+            "text": f"{SYSTEM_PROMPT}\n\n{SYNTHESE_PROMPT}",
+            "cache_control": {"type": "ephemeral"}
+        }],
+        messages=[{"role": "user", "content": prompt}]
     )
 
     text = antwort.content[0].text.strip()
-    if "```" in text:
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        headline_match = re.search(r'"headline"\s*:\s*"(.*?)"(?=\s*,\s*"|\s*\})', text, re.DOTALL)
-        m = re.search(r'"summary"\s*:\s*"(.*?)"(?=\s*,\s*"|\s*\})', text, re.DOTALL)
-        return {
-            "headline": headline_match.group(1).replace('\\"', '"') if headline_match else "",
-            "summary": m.group(1).replace('\\"', '"') if m else "",
-        }
+
+    # KEIN_CLUSTER früh erkennen — vor dem JSON-Parsing
+    if "KEIN_CLUSTER" in text:
+        return {"summary": "KEIN_CLUSTER"}
+
+    return _parse_json(text, ["headline", "summary"])
 
 
-def analyse_mit_claude(client, schlagzeile):
-    klassifikation = klassifizieren_mit_haiku(client, schlagzeile)
-    zusammenfassung = zusammenfassen_mit_sonnet(client, schlagzeile)
-    return {**klassifikation, **zusammenfassung}
+def analyse_mit_claude(client, artikel):
+    return klassifizieren_mit_haiku(client, artikel)

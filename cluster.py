@@ -1,43 +1,109 @@
-from collections import Counter, defaultdict
+"""
+clustering.py
+-------------
+Semantisches Clustering von Nachrichtenartikeln.
 
-from config import ALLE_AUSRICHTUNGEN, _STOPPWOERTER
+Verwendet Sentence-Embeddings statt Keyword-Matching, damit inhaltlich
+gleiche Artikel geclustert werden - unabhaengig von der verwendeten Sprache
+oder den konkreten Keywords.
+
+Pipeline:
+    1. Text aus headline + summary + kategorie zusammenbauen
+    2. Embeddings via sentence-transformers generieren
+    3. Dimensionsreduktion via UMAP
+    4. Clustering via HDBSCAN
+    5. Datum-Filter: Artikel die zu weit auseinanderliegen nicht zusammenklappen
+    6. Ausreisser nachtraeglich zuweisen via Cosine-Similarity
+    7. cluster_id + cluster_size in jeden Artikel schreiben
+
+Abhaengigkeiten:
+    pip install sentence-transformers umap-learn scikit-learn numpy
+"""
+
+import hashlib
+from collections import Counter
+from datetime import datetime
+
+import numpy as np
+from sklearn.cluster import HDBSCAN
+from sentence_transformers import SentenceTransformer
+from umap import UMAP
 
 
-def _artikel_staerke(a):
-    return (
-        a.get("relevance_score", 0),
-        1 if a.get("image_url") else 0,
-        len(a.get("summary", "")),
+# ---------------------------------------------------------------------------
+# Konfiguration
+# ---------------------------------------------------------------------------
+
+EMBEDDING_MODEL = "paraphrase-multilingual-mpnet-base-v2"
+MAX_TAGE_ABSTAND = 3
+UMAP_N_COMPONENTS = 5
+UMAP_N_NEIGHBORS = 15
+UMAP_MIN_DIST = 0.0
+HDBSCAN_MIN_CLUSTER_SIZE = 2
+HDBSCAN_MIN_SAMPLES = 1
+SIMILARITY_THRESHOLD = 0.82
+
+
+# ---------------------------------------------------------------------------
+# Hilfsfunktionen
+# ---------------------------------------------------------------------------
+
+def _artikel_zu_text(artikel):
+    """
+    Baut einen Eingabe-String fuer das Embedding-Modell.
+    Headline wird doppelt gewichtet da sie das Thema am praezisesten beschreibt.
+    """
+    headline = artikel.get("headline", "")
+    summary = artikel.get("summary", "")
+    kategorie = artikel.get("kategorie", "") or artikel.get("tag", "")
+
+    teile = [headline, headline, summary, kategorie]
+    return " ".join(t for t in teile if t).strip()
+
+
+def _datum_parsen(artikel):
+    """
+    Liest das Datum aus dem Artikel.
+    Gibt None zurueck wenn kein Datum vorhanden oder nicht parsebar.
+    Erwartet ISO-Format z.B. 2024-05-07 oder 2024-05-07T14:30:00
+    """
+    raw = (
+        artikel.get("datum")
+        or artikel.get("date")
+        or artikel.get("published_at")
     )
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw)[:10])
+    except (ValueError, TypeError):
+        return None
 
 
-def _cluster_fingerprint(artikel_list):
-    sonderzeichen = '„""»«\'"\\-.,!?:()'
-    alle_woerter = []
-    for a in artikel_list:
-        alle_woerter.extend([
-            w.strip(sonderzeichen).lower()
-            for w in a["headline"].split()
-            if len(w.strip(sonderzeichen)) > 3
-            and w.strip(sonderzeichen).lower() not in _STOPPWOERTER
-        ])
-    counter = Counter(alle_woerter)
-    top_woerter = sorted(w for w, _ in counter.most_common(5))
-    return "|".join(top_woerter)
+def _datum_zu_weit(a, b):
+    """
+    Gibt True zurueck wenn zwei Artikel zeitlich zu weit auseinanderliegen.
+    """
+    datum_a = _datum_parsen(a)
+    datum_b = _datum_parsen(b)
+    if datum_a is None or datum_b is None:
+        return False
+    return abs((datum_a - datum_b).days) > MAX_TAGE_ABSTAND
 
 
-def schlagzeilen_clustern(artikel_liste):
-    sonderzeichen = '„""»«\'"\\-.,!?:()'
+def _cosine_matrix(embeddings):
+    """
+    Berechnet die vollstaendige Cosine-Similarity-Matrix.
+    Setzt voraus dass embeddings bereits L2-normalisiert sind.
+    """
+    return embeddings @ embeddings.T
 
-    def keywords(text):
-        return {
-            w.strip(sonderzeichen).lower()
-            for w in text.split()
-            if len(w.strip(sonderzeichen)) > 3
-            and w.strip(sonderzeichen).lower() not in _STOPPWOERTER
-        }
 
-    n = len(artikel_liste)
+# ---------------------------------------------------------------------------
+# Union-Find
+# ---------------------------------------------------------------------------
+
+def _make_union_find(n):
     eltern = list(range(n))
 
     def find(x):
@@ -46,63 +112,205 @@ def schlagzeilen_clustern(artikel_liste):
             x = eltern[x]
         return x
 
-    # Stufe 1: 2+ gemeinsame Keywords aus Headline
-    kw_headline = [keywords(a["headline"]) for a in artikel_liste]
-    for i in range(n):
-        for j in range(i + 1, n):
-            if len(kw_headline[i] & kw_headline[j]) >= 2:
-                eltern[find(i)] = find(j)
+    def union(x, y):
+        eltern[find(x)] = find(y)
 
-    # Singletons nach Stufe 1 ermitteln
-    wurzeln_s1 = [find(i) for i in range(n)]
-    groessen_s1 = Counter(wurzeln_s1)
-    singletons = [i for i in range(n) if groessen_s1[wurzeln_s1[i]] == 1]
+    return eltern, find, union
 
-    # Stufe 2: Headline + Teaser kombiniert, 3+ Keywords, nur für Singletons
-    kw_kombi = [
-        keywords(a["headline"] + " " + a.get("teaser", ""))
-        for a in artikel_liste
-    ]
-    for idx_i in range(len(singletons)):
-        i = singletons[idx_i]
-        for idx_j in range(idx_i + 1, len(singletons)):
-            j = singletons[idx_j]
-            if find(i) != find(j) and len(kw_kombi[i] & kw_kombi[j]) >= 3:
-                eltern[find(i)] = find(j)
 
-    # Singletons nach Stufe 2 ermitteln
-    wurzeln_s2 = [find(i) for i in range(n)]
-    groessen_s2 = Counter(wurzeln_s2)
-    singletons_s2 = [i for i in range(n) if groessen_s2[wurzeln_s2[i]] == 1]
+# ---------------------------------------------------------------------------
+# Hauptfunktion
+# ---------------------------------------------------------------------------
 
-    # Stufe 4: Kernthema – häufigstes Named Entity (Großbuchstabe, ≥6 Zeichen) in Headline+Teaser
-    # Bindestrich-Komposita werden gesplittet, jedes Teil nochmals gestrippt
-    def kernthema(text):
-        kandidaten = []
-        for w in text.split():
-            for teil in w.strip(sonderzeichen).split('-'):
-                teil = teil.strip(sonderzeichen)
-                if teil and teil[0].isupper() and len(teil) >= 6 and teil.lower() not in _STOPPWOERTER:
-                    kandidaten.append(teil.lower())
-        if not kandidaten:
-            return None
-        return Counter(kandidaten).most_common(1)[0][0]
+def _fingerprint_merge_pass(artikel_liste, embeddings_map):
+    cluster_zu_idx = {}
+    for i, a in enumerate(artikel_liste):
+        cluster_zu_idx.setdefault(a["cluster_id"], []).append(i)
 
-    thema_zu_idx = defaultdict(list)
-    for i in singletons_s2:
-        kt = kernthema(
-            artikel_liste[i]["headline"] + " " + artikel_liste[i].get("teaser", "")
+    grosse = {cid: idxs for cid, idxs in cluster_zu_idx.items() if len(idxs) >= 2}
+    if len(grosse) < 2:
+        return
+
+    cluster_ids = list(grosse.keys())
+    repraesentant = {
+        cid: max(idxs, key=lambda i: artikel_liste[i].get("relevance_score", 0))
+        for cid, idxs in grosse.items()
+    }
+
+    _, find_c, union_c = _make_union_find(len(cluster_ids))
+    cid_pos = {cid: pos for pos, cid in enumerate(cluster_ids)}
+
+    for i_pos, cid_i in enumerate(cluster_ids):
+        for j_pos in range(i_pos + 1, len(cluster_ids)):
+            cid_j = cluster_ids[j_pos]
+            ri = repraesentant[cid_i]
+            rj = repraesentant[cid_j]
+            art_i = artikel_liste[ri]
+            art_j = artikel_liste[rj]
+
+            if _datum_zu_weit(art_i, art_j):
+                continue
+
+            emb_i = embeddings_map[ri]
+            emb_j = embeddings_map[rj]
+            sem_sim = float(np.dot(emb_i, emb_j))
+
+            who_i = {w.lower() for w in (art_i.get("event_who") or [])}
+            who_j = {w.lower() for w in (art_j.get("event_who") or [])}
+            who_union = who_i | who_j
+            who_sim = len(who_i & who_j) / len(who_union) if who_union else 0.0
+
+            where_i = (art_i.get("event_where") or "").lower().strip()
+            where_j = (art_j.get("event_where") or "").lower().strip()
+            where_sim = 1.0 if where_i and where_j and where_i == where_j else 0.0
+
+            what_i = set((art_i.get("event_what") or "").lower().split())
+            what_j = set((art_j.get("event_what") or "").lower().split())
+            what_union = what_i | what_j
+            what_sim = len(what_i & what_j) / len(what_union) if what_union else 0.0
+
+            aehnlichkeit = (
+                0.45 * sem_sim
+                + 0.25 * who_sim
+                + 0.15 * where_sim
+                + 0.15 * what_sim
+            )
+
+            if aehnlichkeit >= 0.75:
+                union_c(cid_pos[cid_i], cid_pos[cid_j])
+
+    neue_cid = {
+        cid: cluster_ids[find_c(pos)]
+        for pos, cid in enumerate(cluster_ids)
+    }
+
+    for artikel in artikel_liste:
+        old = artikel["cluster_id"]
+        if old in neue_cid:
+            artikel["cluster_id"] = neue_cid[old]
+
+    neue_groessen = Counter(a["cluster_id"] for a in artikel_liste)
+    for artikel in artikel_liste:
+        artikel["cluster_size"] = neue_groessen[artikel["cluster_id"]]
+
+
+def artikel_clustern(artikel_liste, embeddings_map=None):
+    """
+    Clustert eine Liste von Artikeln semantisch.
+
+    Jeder Artikel bekommt folgende Felder hinzugefuegt:
+        - cluster_id   (int) gemeinsame ID pro Cluster
+        - cluster_size (int) Anzahl Artikel in diesem Cluster
+
+    Args:
+        artikel_liste: Liste von Artikel-Dicts mit mindestens 'headline'
+
+    Returns:
+        Dieselbe Liste, angereichert mit cluster_id und cluster_size.
+    """
+    if not artikel_liste:
+        return artikel_liste
+
+    n = len(artikel_liste)
+
+    # ------------------------------------------------------------------
+    # 1. Texte aufbauen
+    # ------------------------------------------------------------------
+    texte = [_artikel_zu_text(a) for a in artikel_liste]
+
+    # ------------------------------------------------------------------
+    # 2. Embeddings generieren
+    # ------------------------------------------------------------------
+    model = SentenceTransformer(EMBEDDING_MODEL)
+    embeddings = model.encode(
+        texte,
+        show_progress_bar=True,
+        batch_size=64,
+        normalize_embeddings=True,
+    )
+    embeddings = np.array(embeddings)
+
+    # ------------------------------------------------------------------
+    # 3. Dimensionsreduktion via UMAP
+    # ------------------------------------------------------------------
+    if n > 2:
+        n_components = min(UMAP_N_COMPONENTS, n - 1)
+        n_neighbors = min(UMAP_N_NEIGHBORS, n - 1)
+
+        umap_model = UMAP(
+            n_components=n_components,
+            n_neighbors=n_neighbors,
+            min_dist=UMAP_MIN_DIST,
+            metric="cosine",
+            random_state=42,
         )
-        if kt:
-            thema_zu_idx[kt].append(i)
+        reduced = umap_model.fit_transform(embeddings)
+    else:
+        reduced = embeddings
 
-    for indices in thema_zu_idx.values():
-        if len(indices) >= 2:
-            for k in indices[1:]:
-                ri, rk = find(indices[0]), find(k)
-                if ri != rk:
-                    eltern[rk] = ri
+    # ------------------------------------------------------------------
+    # 4. HDBSCAN Clustering
+    # ------------------------------------------------------------------
+    min_cluster_size = min(HDBSCAN_MIN_CLUSTER_SIZE, n)
 
+    clusterer = HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=HDBSCAN_MIN_SAMPLES,
+        metric="euclidean",
+        cluster_selection_method="eom",
+    )
+    labels = clusterer.fit_predict(reduced)
+
+    # ------------------------------------------------------------------
+    # 5. HDBSCAN-Ergebnis in Union-Find ueberfuehren
+    # ------------------------------------------------------------------
+    eltern, find, union = _make_union_find(n)
+
+    label_zu_indices = {}
+    for i, label in enumerate(labels):
+        if label == -1:
+            continue
+        label_zu_indices.setdefault(label, []).append(i)
+
+    for indices in label_zu_indices.values():
+        for k in indices[1:]:
+            union(indices[0], k)
+
+    # ------------------------------------------------------------------
+    # 6. Datum-Filter: Cluster aufbrechen wenn Artikel zu weit auseinander
+    # ------------------------------------------------------------------
+    for indices in label_zu_indices.values():
+        for i in range(len(indices)):
+            for j in range(i + 1, len(indices)):
+                idx_i = indices[i]
+                idx_j = indices[j]
+                if find(idx_i) == find(idx_j):
+                    if _datum_zu_weit(artikel_liste[idx_i], artikel_liste[idx_j]):
+                        eltern[find(idx_i)] = idx_i
+
+    # ------------------------------------------------------------------
+    # 7. Ausreisser nachtraeglich zuweisen via Cosine-Similarity
+    # ------------------------------------------------------------------
+    similarity_matrix = _cosine_matrix(embeddings)
+
+    ausreisser = [i for i, label in enumerate(labels) if label == -1]
+    for i in ausreisser:
+        beste_sim = -1
+        bester_j = -1
+        for j in range(n):
+            if j == i or labels[j] == -1:
+                continue
+            sim = float(similarity_matrix[i, j])
+            if sim > beste_sim:
+                beste_sim = sim
+                bester_j = j
+        if bester_j != -1 and beste_sim >= SIMILARITY_THRESHOLD:
+            if not _datum_zu_weit(artikel_liste[i], artikel_liste[bester_j]):
+                union(i, bester_j)
+
+    # ------------------------------------------------------------------
+    # 8. cluster_id und cluster_size schreiben
+    # ------------------------------------------------------------------
     wurzeln = [find(i) for i in range(n)]
     groessen = Counter(wurzeln)
 
@@ -110,34 +318,29 @@ def schlagzeilen_clustern(artikel_liste):
         artikel["cluster_id"] = wurzeln[i]
         artikel["cluster_size"] = groessen[wurzeln[i]]
 
-    # Spectrum-Analyse pro Cluster
-    cluster_gruppen = defaultdict(list)
-    for a in artikel_liste:
-        cluster_gruppen[a["cluster_id"]].append(a)
-
-    for gruppe in cluster_gruppen.values():
-        vorhandene = {a.get("political_leaning", "") for a in gruppe}
-        stille = [s for s in ALLE_AUSRICHTUNGEN if s not in vorhandene]
-        count = len(vorhandene & set(ALLE_AUSRICHTUNGEN))
-        score = round(len(stille) / len(ALLE_AUSRICHTUNGEN) * 100)
-
-        if len(gruppe) == 1:
-            label = "Einzelmeldung"
-        elif not stille:
-            label = "Vollspektrum"
-        elif set(stille) <= {"Rechts", "Mitte-Rechts"}:
-            label = "Rechts-Blindspot"
-        elif set(stille) <= {"Links", "Mitte-Links"}:
-            label = "Links-Blindspot"
-        elif stille == ["Mitte"]:
-            label = "Mitte-Blindspot"
-        else:
-            label = "Gemischter Blindspot"
-
-        for a in gruppe:
-            a["spectrum_count"] = count
-            a["silent_spectrums"] = stille
-            a["blindspot_score"] = score
-            a["blindspot_label"] = label
+    # ------------------------------------------------------------------
+    # 9. Fingerprint-Merge-Pass
+    # ------------------------------------------------------------------
+    if embeddings_map is None:
+        embeddings_map = {i: embeddings[i] for i in range(n)}
+    _fingerprint_merge_pass(artikel_liste, embeddings_map)
 
     return artikel_liste
+
+
+def schlagzeilen_clustern(artikel_liste):
+    return artikel_clustern(artikel_liste)
+
+
+def _artikel_staerke(artikel):
+    return (
+        artikel.get("relevance_score", 0),
+        artikel.get("cluster_size", 1),
+        1 if artikel.get("is_top_story") else 0,
+    )
+
+
+def _cluster_fingerprint(artikel_liste):
+    headlines = sorted(a.get("headline", "") for a in artikel_liste)
+    combined = "|".join(headlines)
+    return hashlib.md5(combined.encode("utf-8")).hexdigest()

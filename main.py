@@ -18,11 +18,12 @@ from config import (
 )
 from breaking import breaking_news_check
 from cluster import schlagzeilen_clustern
+from fingerprint import fingerprint_erstellen
 from fetcher import schlagzeilen_abrufen
 from filter import ist_zu_vage
 from images import unsplash_bild_suchen
 from sorter import feed_sortieren
-from writer import analyse_mit_claude, cluster_synthese_mit_sonnet
+from writer import klassifizieren_mit_haiku, cluster_synthese_mit_sonnet
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 load_dotenv()
@@ -71,34 +72,47 @@ def normaler_durchlauf(client, unsplash_key):
     if uebersprungen:
         print(f"\n  {uebersprungen} Artikel wegen zu vager Headline übersprungen.")
 
-    # Schritt 2: Clustering VOR der API-Analyse
+    # Schritt 2: Fingerprint-Extraktion
+    print(f"\nExtrahiere Fingerprints für {len(gefiltert)} Artikel ...")
+    gefiltert = fingerprint_erstellen(gefiltert, client)
+
+    # DEBUG: Fingerprint-Felder für Bundesrat / Commerzbank
+    _debug_schluessel = ("Bundesrat", "Commerzbank")
+    _debug_treffer = [a for a in gefiltert if any(k in a.get("headline", "") for k in _debug_schluessel)]
+    if _debug_treffer:
+        print("\n" + "=" * 60)
+        print("  DEBUG: Fingerprint-Felder")
+        print("=" * 60)
+        for a in _debug_treffer:
+            print(f"\n  Headline:     {a['headline'][:80]}")
+            print(f"  event_who:    {a.get('event_who')}")
+            print(f"  event_what:   {a.get('event_what')}")
+            print(f"  event_where:  {a.get('event_where')}")
+            print(f"  event_when:   {a.get('event_when')}")
+        print("=" * 60)
+
+    # Schritt 3: Clustering VOR der API-Analyse
     print(f"\nClustere {len(gefiltert)} Artikel ...")
     schlagzeilen_clustern(gefiltert)
-    synthetisierte_cluster = len({
-        a["cluster_id"] for a in gefiltert if a.get("cluster_size", 1) > 1
-    })
-    print(f"  {synthetisierte_cluster} Cluster mit 2+ Quellen erkannt.")
 
-    # Schritt 3: Claude-Analyse
-    print(f"\nAnalysiere {len(gefiltert)} Schlagzeilen mit Claude ...\n")
+    # Nur Artikel in echten Clustern (2+ Quellen) weiterverarbeiten
+    gefiltert = [a for a in gefiltert if a.get("cluster_size", 1) > 1]
+    synthetisierte_cluster = len({a["cluster_id"] for a in gefiltert})
+    print(f"  {synthetisierte_cluster} Cluster mit 2+ Quellen erkannt.")
+    print(f"  {len(gefiltert)} Artikel in Clustern weiterverarbeitet (Einzelmeldungen verworfen).")
+
+
+    # Schritt 3: Haiku-Klassifizierung
+    print(f"\nKlassifiziere {len(gefiltert)} Artikel mit Haiku ...\n")
     ergebnisse = []
 
     for i, artikel in enumerate(gefiltert, 1):
         print(f"  [{i}/{len(gefiltert)}] {artikel['headline'][:70]}...")
         try:
-            analyse = analyse_mit_claude(client, artikel)
-            if analyse.get("summary") == "KEIN_ARTIKEL":
-                print(f"    ↳ Kein seriöser Artikel – verworfen.")
-                uebersprungen += 1
-                continue
+            analyse = klassifizieren_mit_haiku(client, artikel)
             kategorie = analyse.get("category", "Sonstiges")
-            image_url = unsplash_bild_suchen(client, artikel["headline"], kategorie, unsplash_key)
-            if image_url:
-                print(f"    Unsplash-Bild gefunden.")
-            if not image_url:
-                image_url = KATEGORIE_FALLBACK_BILDER.get(kategorie, "")
             ergebnisse.append({
-                "headline": analyse.get("headline") or artikel["headline"],
+                "headline": artikel["headline"],
                 "summary": analyse.get("summary", ""),
                 "source": artikel["source"],
                 "political_leaning": artikel["political_leaning"],
@@ -106,7 +120,7 @@ def normaler_durchlauf(client, unsplash_key):
                 "is_breaking": analyse.get("is_breaking", False),
                 "relevance_score": analyse.get("relevance_score", 50),
                 "is_top_story": analyse.get("is_top_story", False),
-                "image_url": image_url,
+                "image_url": "",
                 "link": artikel["link"],
                 "timestamp": datetime.now().isoformat(),
                 "cluster_id": artikel["cluster_id"],
@@ -118,7 +132,7 @@ def normaler_durchlauf(client, unsplash_key):
             })
             time.sleep(0.5)
         except Exception as fehler:
-            print(f"    Fehler bei Analyse: {fehler}")
+            print(f"    Fehler bei Klassifizierung: {fehler}")
 
     # Schritt 4: Cluster-Synthese
     print(f"\nSynthetisiere Cluster ...")
@@ -130,10 +144,6 @@ def normaler_durchlauf(client, unsplash_key):
     cluster_synthetisiert = 0
 
     for cid, gruppe in nach_cluster.items():
-        if len(gruppe) == 1:
-            finale_artikel.append(gruppe[0])
-            continue
-
         bester = max(gruppe, key=lambda x: x.get("relevance_score", 0))
 
         try:
@@ -141,10 +151,7 @@ def normaler_durchlauf(client, unsplash_key):
             summary = synthese.get("summary", bester.get("summary", ""))
             cluster_headline = synthese.get("headline") or bester["headline"]
             if summary == "KEIN_CLUSTER":
-                for a in gruppe:
-                    a["cluster_size"] = 1
-                finale_artikel.extend(gruppe)
-                print(f"    ↳ Kein echter Cluster – {len(gruppe)} Artikel als Einzelmeldungen")
+                print(f"    ↳ Kein echter Cluster – {len(gruppe)} Artikel verworfen.")
                 continue
         except Exception as e:
             print(f"    Synthese-Fehler Cluster {cid}: {e}")
@@ -181,12 +188,6 @@ def normaler_durchlauf(client, unsplash_key):
         print(f"  ✓ Cluster: {len(gruppe)} Artikel → 1 Story  [{alle_quellen[:55]}]")
 
     ergebnisse = feed_sortieren(finale_artikel)
-
-    # Sicherheitsnetz: Einzelartikel dürfen nie spectrum_count > 1 oder falsches Label haben
-    for a in ergebnisse:
-        if a.get("cluster_size", 1) == 1:
-            a["spectrum_count"] = 1
-            a["blindspot_label"] = "Einzelmeldung"
 
     dateiname = f"news_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(dateiname, "w", encoding="utf-8") as f:
@@ -225,8 +226,7 @@ def normaler_durchlauf(client, unsplash_key):
     print("-" * 60)
 
     breaking_artikel = [a for a in ergebnisse if a.get("is_breaking", False)]
-    multi_artikel = [a for a in ergebnisse if not a.get("is_breaking", False) and a["cluster_size"] > 1]
-    einzel_artikel = [a for a in ergebnisse if not a.get("is_breaking", False) and a["cluster_size"] == 1]
+    multi_artikel = [a for a in ergebnisse if not a.get("is_breaking", False)]
 
     def _zeige_artikel(artikel, breaking=False):
         leaning = artikel["political_leaning"].ljust(12)
@@ -245,7 +245,7 @@ def normaler_durchlauf(client, unsplash_key):
         for artikel in breaking_artikel:
             cluster_id = artikel["cluster_id"]
             cluster_size = artikel["cluster_size"]
-            if cluster_size > 1 and cluster_id != letzter_cluster_id:
+            if cluster_id != letzter_cluster_id:
                 fueller = "-" * (44 - len(str(cluster_size)))
                 print(f"\n-- {cluster_size} Quellen berichten {fueller}")
             letzter_cluster_id = cluster_id
@@ -260,11 +260,6 @@ def normaler_durchlauf(client, unsplash_key):
                 fueller = "-" * (44 - len(str(cluster_size)))
                 print(f"\n-- {cluster_size} Quellen berichten {fueller}")
             letzter_cluster_id = cluster_id
-            _zeige_artikel(artikel)
-
-    if einzel_artikel:
-        print("\n-- Einzelmeldungen " + "-" * 41)
-        for artikel in einzel_artikel:
             _zeige_artikel(artikel)
 
     logger.info(
