@@ -16,7 +16,7 @@ from config import (
 from cluster import _cluster_fingerprint, schlagzeilen_clustern
 from fetcher import schlagzeilen_abrufen
 from filter import ist_zu_vage
-from writer import analyse_mit_claude
+from writer import analyse_mit_claude, cluster_synthese_mit_sonnet
 
 logger = logging.getLogger("news_agent")
 
@@ -144,9 +144,20 @@ def breaking_news_check(client, on_complete=None):
             print(f"      Claude-Fehler: {e}")
             continue
 
+        headline = bester["headline"]
+        summary = ""
+        if len(arts) >= 2:
+            try:
+                synthese = cluster_synthese_mit_sonnet(client, arts)
+                if synthese.get("summary") != "KEIN_CLUSTER":
+                    summary = synthese.get("summary", "")
+                    headline = synthese.get("headline") or headline
+            except Exception as e:
+                print(f"      Synthese-Fehler: {e}")
+
         ergebnisse.append({
-            "headline": bester["headline"],
-            "summary": analyse.get("summary", ""),
+            "headline": headline,
+            "summary": summary,
             "source": bester["source"],
             "political_leaning": bester["political_leaning"],
             "category": analyse.get("category", "Sonstiges"),
@@ -156,6 +167,7 @@ def breaking_news_check(client, on_complete=None):
             "is_top_story": analyse.get("is_top_story", True),
             "image_url": "",
             "link": bester["link"],
+            "links": {a["source"]: a["link"] for a in arts},
             "timestamp": jetzt.isoformat(),
         })
         seen.add(fingerprint)

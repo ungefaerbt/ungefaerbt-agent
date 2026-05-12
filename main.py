@@ -94,7 +94,7 @@ def normaler_durchlauf(client):
     schlagzeilen_clustern(gefiltert)
 
     # Nur Artikel in echten Clustern (2+ unterschiedliche Quellen) weiterverarbeiten
-    gefiltert = [a for a in gefiltert if a.get("cluster_source_count", a.get("cluster_size", 1)) > 1]
+    gefiltert = [a for a in gefiltert if a.get("cluster_size", 1) > 1]
     synthetisierte_cluster = len({a["cluster_id"] for a in gefiltert})
     print(f"  {synthetisierte_cluster} Cluster mit 2+ Quellen erkannt.")
     print(f"  {len(gefiltert)} Artikel in Clustern weiterverarbeitet (Einzelmeldungen verworfen).")
@@ -172,6 +172,7 @@ def normaler_durchlauf(client):
             "is_top_story": bester.get("is_top_story", False),
             "image_url": "",
             "link": bester["link"],
+            "links": {a["source"]: a["link"] for a in gruppe},
             "timestamp": bester["timestamp"],
             "cluster_id": cid,
             "cluster_size": cluster_quellen_count,
