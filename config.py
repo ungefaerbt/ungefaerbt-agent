@@ -45,6 +45,9 @@ QUELLEN = {
     "heise.de":                 {"rss": "https://www.heise.de/rss/heise-atom.xml",                                      "ausrichtung": "Mitte"},
     "t3n.de":                   {"rss": "https://t3n.de/rss.xml",                                                       "ausrichtung": "Mitte"},
     "golem.de":                 {"rss": "https://www.golem.de/rss",                                                     "ausrichtung": "Mitte"},
+    # ── DEUTSCHLAND (Ergänzung) ─────────────────────────────
+    "t-online.de":              {"rss": "https://www.t-online.de/feed.rss",                                             "ausrichtung": "Mitte"},
+    "dw.com":                   {"rss": "https://rss.dw.com/rdf/rss-de-all",                                            "ausrichtung": "Mitte"},
     # ── SPORT ───────────────────────────────────────────────────
     "kicker.de":                {"rss": "https://newsfeed.kicker.de/news/fussball",                                     "ausrichtung": "Mitte"},
     "sportschau.de":            {"rss": "https://www.sportschau.de/index~rss2.xml",                                     "ausrichtung": "Mitte"},
@@ -56,6 +59,8 @@ QUELLEN = {
     "diepresse.com":            {"rss": "https://www.diepresse.com/rss",                                             "ausrichtung": "Mitte-Rechts"},
     "krone.at":                 {"rss": "https://api.krone.at/v1/rss/rssfeed-nachrichten.html",                     "ausrichtung": "Rechts"},
     "kleinezeitung.at":         {"rss": "https://www.kleinezeitung.at/rss",                                             "ausrichtung": "Mitte"},
+    # ── ÖSTERREICH (Ergänzung) ──────────────────────────────
+    "orf.at":                   {"rss": "https://rss.orf.at/news.xml",                                                  "ausrichtung": "Mitte"},
     # ── SCHWEIZ ─────────────────────────────────────────────────
     "tagesanzeiger.ch":         {"rss": "https://www.tagesanzeiger.ch/rss.html",                                       "ausrichtung": "Mitte-Links"},
     "blick.ch":                 {"rss": "https://www.blick.ch/rss.xml",                                                 "ausrichtung": "Mitte"},
