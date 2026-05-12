@@ -37,20 +37,32 @@ def feeds_aus_quelle(name, daten):
     return []
 
 
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+
 def feed_laden(rss_url, timeout=10):
     try:
-        with urllib.request.urlopen(rss_url, timeout=timeout) as response:
+        req = urllib.request.Request(rss_url, headers={"User-Agent": _USER_AGENT})
+        with urllib.request.urlopen(req, timeout=timeout) as response:
             inhalt = response.read()
-        return feedparser.parse(inhalt), None
+        return feedparser.parse(inhalt), None, None
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            return None, "BLOCKED_403", str(e)
+        return None, "ERROR", str(e)
     except urllib.error.URLError as e:
         reason = getattr(e, "reason", None)
         if isinstance(reason, (socket.timeout, TimeoutError)):
-            return None, "timeout"
-        return None, str(e)
+            return None, "ERROR", "timeout"
+        return None, "ERROR", str(e)
     except (socket.timeout, TimeoutError):
-        return None, "timeout"
+        return None, "ERROR", "timeout"
     except Exception as e:
-        return None, str(e)
+        return None, "ERROR", str(e)
 
 
 def feed_pruefen(source, ausrichtung, ressort, rss_url):
@@ -62,11 +74,18 @@ def feed_pruefen(source, ausrichtung, ressort, rss_url):
     if ressort is not None:
         ergebnis["ressort"] = ressort
 
-    feed, fehler = feed_laden(rss_url)
+    feed, status_fehler, fehler_msg = feed_laden(rss_url)
 
-    if fehler is not None:
+    if status_fehler == "BLOCKED_403":
+        logger.warning("Feed blockiert (403) — möglicherweise User-Agent-Filter: %s", rss_url)
+        ergebnis["status"] = "BLOCKED_403"
+        ergebnis["error_message"] = fehler_msg
+        ergebnis["number_of_entries"] = 0
+        return ergebnis
+
+    if status_fehler == "ERROR":
         ergebnis["status"] = "ERROR"
-        ergebnis["error_message"] = fehler
+        ergebnis["error_message"] = fehler_msg
         ergebnis["number_of_entries"] = 0
         return ergebnis
 
@@ -128,13 +147,14 @@ def main():
             alle_ergebnisse.append(ergebnis)
             ergebnis_ausgeben(ergebnis)
 
-    gesamt = len(alle_ergebnisse)
-    ok    = sum(1 for e in alle_ergebnisse if e["status"] == "OK")
-    warn  = sum(1 for e in alle_ergebnisse if e["status"] == "WARN")
-    error = sum(1 for e in alle_ergebnisse if e["status"] == "ERROR")
+    gesamt       = len(alle_ergebnisse)
+    ok           = sum(1 for e in alle_ergebnisse if e["status"] == "OK")
+    warn         = sum(1 for e in alle_ergebnisse if e["status"] == "WARN")
+    error        = sum(1 for e in alle_ergebnisse if e["status"] == "ERROR")
+    blocked_403  = sum(1 for e in alle_ergebnisse if e["status"] == "BLOCKED_403")
 
     print()
-    print(f"Gesamt: {gesamt}  |  OK: {ok}  |  WARN: {warn}  |  ERROR: {error}")
+    print(f"Gesamt: {gesamt}  |  OK: {ok}  |  WARN: {warn}  |  ERROR: {error}  |  BLOCKED_403: {blocked_403}")
 
     jetzt = datetime.now()
     report = {
@@ -143,6 +163,7 @@ def main():
         "ok": ok,
         "warn": warn,
         "error": error,
+        "blocked_403_count": blocked_403,
         "ergebnisse": alle_ergebnisse,
     }
 
@@ -156,8 +177,8 @@ def main():
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     logger.info(
-        "validate_feeds abgeschlossen: %s/%s OK, %s WARN, %s ERROR — %s, %s",
-        ok, gesamt, warn, error, datei_timestamp, datei_latest,
+        "validate_feeds abgeschlossen: %s/%s OK, %s WARN, %s ERROR, %s BLOCKED_403 — %s, %s",
+        ok, gesamt, warn, error, blocked_403, datei_timestamp, datei_latest,
     )
 
 
