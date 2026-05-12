@@ -5,6 +5,12 @@
 news_*.json
 breaking_*.json
 breaking_seen.json
+final_news_*.json
+quality_report.json
+social_eval_report.json
+bias_barometer_report.json
+feed_validation_report_*.json
+feed_validation_report_latest.json
 log.txt
 test_output.txt
 test_error.txt

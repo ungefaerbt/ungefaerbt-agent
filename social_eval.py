@@ -221,7 +221,7 @@ def story_evaluieren(story):
     quality_status = story.get("quality_status", "needs_review")
 
     social_post_worthy = (
-        social_post_score >= 70
+        social_post_score >= 60
         and quality_status == "ready"
         and social_risk != "high"
     )
