@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import sys
 from datetime import datetime
 
@@ -14,6 +15,107 @@ if not logger.handlers:
     logger.addHandler(_handler)
 logger.propagate = False
 
+# ---------------------------------------------------------------------------
+# Kontrast-Check Konfiguration
+# ---------------------------------------------------------------------------
+
+ENABLE_CONTRAST_CHECK = True
+CONTRAST_BONUS_HIGH = 20
+CONTRAST_BONUS_LOW = 10
+CONTRAST_THRESHOLD_HIGH = 70
+CONTRAST_THRESHOLD_LOW = 50
+CONTRAST_MODEL = "claude-sonnet-4-20250514"
+
+CONTRAST_SYSTEM_PROMPT = """\
+Du analysierst Nachrichtenheadlines verschiedener Medien zur selben Geschichte.
+Bewerte ob die Headlines semantisch unterschiedlich framen — also ob sie unterschiedliche \
+Schwerpunkte setzen, unterschiedliche Begriffe verwenden oder das Ereignis unterschiedlich darstellen.
+
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt. Kein erklärender Text, keine Markdown-Backticks, kein Preamble.
+Wenn kein Kontrast erkennbar ist, antworte mit einem leeren contrast_pairs Array.\
+"""
+
+
+# ---------------------------------------------------------------------------
+# Kontrast-Check Hilfsfunktionen
+# ---------------------------------------------------------------------------
+
+def _kontrast_fallback():
+    return {
+        "has_contrast": False,
+        "contrast_score": 0,
+        "contrast_type": "no_contrast",
+        "contrast_pairs": [],
+        "recommended_social_format": "keep_existing_format",
+    }
+
+
+def _parse_contrast_json(text):
+    if "```" in text:
+        parts = text.split("```")
+        text = parts[1]
+        if text.startswith("json"):
+            text = text[4:]
+    return json.loads(text.strip())
+
+
+def kontrast_bonus_berechnen(contrast_score):
+    if contrast_score >= CONTRAST_THRESHOLD_HIGH:
+        return CONTRAST_BONUS_HIGH
+    if contrast_score >= CONTRAST_THRESHOLD_LOW:
+        return CONTRAST_BONUS_LOW
+    return 0
+
+
+def kontrast_check_ausfuehren(client, story):
+    source_articles = story.get("source_articles")
+    if not source_articles or len(source_articles) < 2:
+        return _kontrast_fallback()
+
+    artikel_input = [
+        {
+            "source": a.get("source", ""),
+            "political_leaning": a.get("political_leaning", ""),
+            "headline": a.get("headline", ""),
+            "link": a.get("link", ""),
+        }
+        for a in source_articles
+    ]
+
+    payload = {
+        "story_id": story.get("story_id", ""),
+        "headline": story.get("headline", ""),
+        "summary": story.get("summary", ""),
+        "category": story.get("category", ""),
+        "source_articles": artikel_input,
+    }
+
+    try:
+        antwort = client.messages.create(
+            model=CONTRAST_MODEL,
+            max_tokens=600,
+            system=CONTRAST_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+        )
+        ergebnis = _parse_contrast_json(antwort.content[0].text)
+        return {
+            "has_contrast": bool(ergebnis.get("has_contrast", False)),
+            "contrast_score": int(ergebnis.get("contrast_score", 0)),
+            "contrast_type": ergebnis.get("contrast_type", "no_contrast"),
+            "contrast_pairs": ergebnis.get("contrast_pairs", []),
+            "recommended_social_format": ergebnis.get("recommended_social_format", "keep_existing_format"),
+        }
+    except Exception as e:
+        logger.warning(
+            "Kontrast-Check fehlgeschlagen für '%s': %s",
+            story.get("headline", "?")[:60], e,
+        )
+        return _kontrast_fallback()
+
+
+# ---------------------------------------------------------------------------
+# Story-Laden
+# ---------------------------------------------------------------------------
 
 def stories_laden(pfad):
     with open(pfad, "r", encoding="utf-8") as f:
@@ -211,7 +313,7 @@ def social_reason_bestimmen(story, social_post_worthy, social_status, source_cou
     return "Nicht empfohlen wegen Einzelmeldung oder fehlender Qualität."
 
 
-def story_evaluieren(story):
+def story_evaluieren(story, contrast_score=0):
     source_count = source_count_bestimmen(story)
     if story.get("source_count") is None:
         story["source_count"] = source_count
@@ -220,15 +322,18 @@ def story_evaluieren(story):
     social_risk = social_risk_bestimmen(story, source_count)
     quality_status = story.get("quality_status", "needs_review")
 
+    bonus = kontrast_bonus_berechnen(contrast_score)
+    social_priority_score = min(100, max(0, social_post_score + bonus))
+
     social_post_worthy = (
-        social_post_score >= 60
+        social_priority_score >= 70
         and quality_status == "ready"
         and social_risk != "high"
     )
 
     if social_post_worthy:
         social_status = "candidate"
-    elif social_post_score >= 60:
+    elif social_priority_score >= 60:
         social_status = "needs_review"
     else:
         social_status = "not_recommended"
@@ -245,6 +350,7 @@ def story_evaluieren(story):
 
     story["social_post_worthy"]      = social_post_worthy
     story["social_post_score"]       = social_post_score
+    story["social_priority_score"]   = social_priority_score
     story["suggested_social_format"] = suggested_format
     story["social_angle"]            = social_angle
     story["social_reason"]           = social_reason
@@ -260,6 +366,58 @@ def social_eval(input_pfad):
     stories = stories_laden(input_pfad)
     logger.info("%s Stories geladen.", len(stories))
 
+    # ---------------------------------------------------------------------------
+    # Kontrast-Check vorbereiten
+    # ---------------------------------------------------------------------------
+    contrast_client = None
+    contrast_check_ran = False
+    contrast_skipped_reason = None
+
+    if ENABLE_CONTRAST_CHECK:
+        logger.info("Kontrast-Check aktiviert (Modell: %s).", CONTRAST_MODEL)
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except ImportError:
+            pass
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            contrast_skipped_reason = "ANTHROPIC_API_KEY nicht gesetzt"
+            logger.warning("Kontrast-Check übersprungen: %s", contrast_skipped_reason)
+        else:
+            try:
+                import anthropic
+                contrast_client = anthropic.Anthropic(api_key=api_key)
+            except ImportError:
+                contrast_skipped_reason = "anthropic-Paket nicht installiert"
+                logger.warning("Kontrast-Check übersprungen: %s", contrast_skipped_reason)
+    else:
+        contrast_skipped_reason = "ENABLE_CONTRAST_CHECK == False"
+        logger.info("Kontrast-Check deaktiviert.")
+
+    # ---------------------------------------------------------------------------
+    # Kontrast-Checks ausführen
+    # ---------------------------------------------------------------------------
+    contrast_results = {}
+    stories_geprueft = 0
+
+    if contrast_client is not None:
+        for i, story in enumerate(stories):
+            source_articles = story.get("source_articles")
+            if isinstance(source_articles, list) and len(source_articles) >= 2:
+                contrast_results[i] = kontrast_check_ausfuehren(contrast_client, story)
+                stories_geprueft += 1
+            else:
+                contrast_results[i] = _kontrast_fallback()
+        contrast_check_ran = True
+        logger.info("Kontrast-Check: %s/%s Stories geprüft.", stories_geprueft, len(stories))
+    else:
+        for i in range(len(stories)):
+            contrast_results[i] = _kontrast_fallback()
+
+    # ---------------------------------------------------------------------------
+    # Stories evaluieren
+    # ---------------------------------------------------------------------------
     format_counts = {}
     risk_counts = {"low": 0, "medium": 0, "high": 0}
     candidate_count = 0
@@ -268,10 +426,36 @@ def social_eval(input_pfad):
     score_summe = 0
     top_candidates = []
     errors = []
+    stories_with_contrast = 0
+    contrast_score_summe = 0
+    worthy_durch_bonus = 0
 
-    for story in stories:
+    for i, story in enumerate(stories):
         try:
-            story_evaluieren(story)
+            kontrast = contrast_results[i]
+            contrast_score = kontrast["contrast_score"]
+
+            # Kontrast-Felder in Story schreiben
+            story["has_contrast"]             = kontrast["has_contrast"]
+            story["contrast_score"]           = contrast_score
+            story["contrast_type"]            = kontrast["contrast_type"]
+            story["contrast_pairs"]           = kontrast["contrast_pairs"]
+            story["recommended_social_format"] = kontrast["recommended_social_format"]
+
+            if kontrast["has_contrast"]:
+                stories_with_contrast += 1
+            contrast_score_summe += contrast_score
+
+            # Score ohne Bonus — um "worthy durch Bonus" zu erkennen
+            score_ohne_bonus = score_berechnen(story, source_count_bestimmen(story))
+            story_evaluieren(story, contrast_score=contrast_score)
+
+            # Hat der Bonus den Ausschlag gegeben?
+            if (story["social_post_worthy"]
+                    and kontrast_bonus_berechnen(contrast_score) > 0
+                    and score_ohne_bonus < 70):
+                worthy_durch_bonus += 1
+
             status = story["social_status"]
             fmt = story["suggested_social_format"]
             risk = story["social_risk"]
@@ -289,10 +473,11 @@ def social_eval(input_pfad):
 
             if story.get("social_post_worthy"):
                 top_candidates.append({
-                    "headline":              story.get("headline", ""),
-                    "social_post_score":     story["social_post_score"],
+                    "headline":                story.get("headline", ""),
+                    "social_post_score":       story["social_post_score"],
+                    "social_priority_score":   story["social_priority_score"],
                     "suggested_social_format": story["suggested_social_format"],
-                    "social_reason":         story["social_reason"],
+                    "social_reason":           story["social_reason"],
                 })
         except Exception as e:
             headline = story.get("headline", "–")[:60]
@@ -300,36 +485,76 @@ def social_eval(input_pfad):
 
     social_post_worthy_count = candidate_count
     avg_score = round(score_summe / len(stories), 1) if stories else 0.0
-    top_candidates.sort(key=lambda x: x["social_post_score"], reverse=True)
+    avg_contrast = round(contrast_score_summe / len(stories), 1) if stories else 0.0
+    top_candidates.sort(key=lambda x: x["social_priority_score"], reverse=True)
 
     logger.info(
         "%s/%s Stories als social_post_worthy markiert.",
         social_post_worthy_count, len(stories),
     )
+    if contrast_check_ran:
+        logger.info(
+            "%s/%s Stories mit has_contrast == true.",
+            stories_with_contrast, stories_geprueft,
+        )
+        logger.info(
+            "%s neue social_post_worthy durch Kontrast-Bonus.",
+            worthy_durch_bonus,
+        )
 
+    # ---------------------------------------------------------------------------
+    # final_news_social.json
+    # ---------------------------------------------------------------------------
     with open("final_news_social.json", "w", encoding="utf-8") as f:
         json.dump(stories, f, ensure_ascii=False, indent=2)
 
+    # ---------------------------------------------------------------------------
+    # final_social_candidates.json
+    # ---------------------------------------------------------------------------
+    candidates = [
+        s for s in stories
+        if s.get("social_post_worthy") or s.get("social_status") == "candidate"
+    ]
+    candidates.sort(key=lambda x: x.get("social_priority_score", 0), reverse=True)
+
+    with open("final_social_candidates.json", "w", encoding="utf-8") as f:
+        json.dump(candidates, f, ensure_ascii=False, indent=2)
+
+    logger.info(
+        "%s Stories in final_social_candidates.json.", len(candidates)
+    )
+
+    # ---------------------------------------------------------------------------
+    # social_eval_report.json
+    # ---------------------------------------------------------------------------
     report = {
-        "timestamp":               datetime.now().isoformat(),
-        "input_file":              input_pfad,
-        "stories_total":           len(stories),
-        "social_post_worthy_count": social_post_worthy_count,
-        "candidate_count":         candidate_count,
-        "needs_review_count":      needs_review_count,
-        "not_recommended_count":   not_recommended_count,
+        "timestamp":                 datetime.now().isoformat(),
+        "input_file":                input_pfad,
+        "stories_total":             len(stories),
+        "social_post_worthy_count":  social_post_worthy_count,
+        "candidate_count":           candidate_count,
+        "needs_review_count":        needs_review_count,
+        "not_recommended_count":     not_recommended_count,
         "average_social_post_score": avg_score,
-        "format_counts":           format_counts,
-        "risk_counts":             risk_counts,
-        "top_candidates":          top_candidates,
-        "warnings":                [],
-        "errors":                  errors,
+        "format_counts":             format_counts,
+        "risk_counts":               risk_counts,
+        "top_candidates":            top_candidates,
+        "contrast_check_enabled":    ENABLE_CONTRAST_CHECK,
+        "contrast_check_ran":        contrast_check_ran,
+        "stories_with_contrast":     stories_with_contrast,
+        "average_contrast_score":    avg_contrast,
+        "contrast_check_skipped_reason": contrast_skipped_reason,
+        "warnings":                  [],
+        "errors":                    errors,
     }
 
     with open("social_eval_report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
-    logger.info("social_eval abgeschlossen → final_news_social.json, social_eval_report.json")
+    logger.info(
+        "social_eval abgeschlossen → final_news_social.json, "
+        "final_social_candidates.json, social_eval_report.json"
+    )
     return stories, report
 
 

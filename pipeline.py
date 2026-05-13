@@ -124,6 +124,17 @@ def main():
             os.path.join(PROJECT_DIR, "final_news_social.json"), "supabase_upload.py"
         )
 
+    # Schritt 6: email_report.py
+    if not dry_run:
+        zwischendatei_pruefen(
+            os.path.join(PROJECT_DIR, "final_social_candidates.json"), "email_report.py"
+        )
+    schritt_ausfuehren(
+        "email_report.py",
+        [sys.executable, "email_report.py", "final_social_candidates.json"],
+        dry_run,
+    )
+
     gesamtdauer = time.monotonic() - pipeline_start
     logger.info(
         "Pipeline abgeschlossen%s — Gesamtdauer: %.0fm %.0fs",
