@@ -24,7 +24,7 @@ CONTRAST_BONUS_HIGH = 20
 CONTRAST_BONUS_LOW = 10
 CONTRAST_THRESHOLD_HIGH = 70
 CONTRAST_THRESHOLD_LOW = 50
-CONTRAST_MODEL = "claude-sonnet-4-5-20251001"
+CONTRAST_MODEL = os.getenv("CONTRAST_MODEL", "claude-sonnet-4-6")
 
 CONTRAST_SYSTEM_PROMPT = """\
 Du analysierst Nachrichtenheadlines verschiedener Medien zur selben Geschichte.
