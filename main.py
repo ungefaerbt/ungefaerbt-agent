@@ -7,15 +7,9 @@ from collections import defaultdict
 from datetime import datetime
 
 import anthropic
-import schedule
 from dotenv import load_dotenv
 
-from config import (
-    ALLE_AUSRICHTUNGEN,
-    BREAKING_INTERVALL_MIN,
-    NORMAL_ZEITEN,
-)
-from breaking import breaking_news_check
+from config import ALLE_AUSRICHTUNGEN
 from cluster import schlagzeilen_clustern
 from fingerprint import fingerprint_erstellen
 from fetcher import schlagzeilen_abrufen
@@ -33,22 +27,6 @@ _log_handler.setFormatter(
 logger = logging.getLogger("news_agent")
 logger.addHandler(_log_handler)
 logger.setLevel(logging.INFO)
-
-
-def _zeige_naechsten_lauf():
-    normal_jobs = schedule.get_jobs("normal")
-    breaking_jobs = schedule.get_jobs("breaking")
-    jetzt = datetime.now()
-    print("\n" + "-" * 60)
-    if breaking_jobs:
-        naechster = min(j.next_run for j in breaking_jobs)
-        diff_min = max(0, int((naechster - jetzt).total_seconds() / 60))
-        print(f"  Breaking-News-Check: {naechster.strftime('%H:%M')} Uhr  (in {diff_min} Min.)")
-    if normal_jobs:
-        naechster = min(j.next_run for j in normal_jobs)
-        diff_min = max(0, int((naechster - jetzt).total_seconds() / 60))
-        print(f"  Normal-Durchlauf:    {naechster.strftime('%H:%M')} Uhr  (in {diff_min} Min.)")
-    print("-" * 60)
 
 
 def normaler_durchlauf(client):
@@ -73,21 +51,6 @@ def normaler_durchlauf(client):
     # Schritt 2: Fingerprint-Extraktion
     print(f"\nExtrahiere Fingerprints für {len(gefiltert)} Artikel ...")
     gefiltert = fingerprint_erstellen(gefiltert, client)
-
-    # DEBUG: Fingerprint-Felder für Bundesrat / Commerzbank
-    _debug_schluessel = ("Bundesrat", "Commerzbank")
-    _debug_treffer = [a for a in gefiltert if any(k in a.get("headline", "") for k in _debug_schluessel)]
-    if _debug_treffer:
-        print("\n" + "=" * 60)
-        print("  DEBUG: Fingerprint-Felder")
-        print("=" * 60)
-        for a in _debug_treffer:
-            print(f"\n  Headline:     {a['headline'][:80]}")
-            print(f"  event_who:    {a.get('event_who')}")
-            print(f"  event_what:   {a.get('event_what')}")
-            print(f"  event_where:  {a.get('event_where')}")
-            print(f"  event_when:   {a.get('event_when')}")
-        print("=" * 60)
 
     # Schritt 3: Clustering VOR der API-Analyse
     print(f"\nClustere {len(gefiltert)} Artikel ...")
@@ -276,7 +239,6 @@ def normaler_durchlauf(client):
         f"{cluster_synthetisiert} Cluster synthetisiert, "
         f"{uebersprungen} uebersprungen -> {dateiname}"
     )
-    _zeige_naechsten_lauf()
 
 
 def main():
@@ -289,42 +251,8 @@ def main():
 
     client = anthropic.Anthropic(api_key=api_key)
 
-    print("\n" + "=" * 60)
-    print("  UNGEFAERBT NEWS AGENT  –  Scheduling aktiv")
-    print(f"  Normal-Durchlauf:     {', '.join(NORMAL_ZEITEN)} Uhr")
-    print(f"  Breaking-News-Check:  alle {BREAKING_INTERVALL_MIN} Minuten")
-    print("  Bildsuche:            ausgelagert an image-agent")
-    print(f"  Log-Datei:            log.txt")
-    print("=" * 60)
     logger.info("News Agent gestartet.")
-
-    print("\nStarte initialen Durchlauf ...\n")
     normaler_durchlauf(client)
-
-    # # Schedules einrichten
-    # for uhrzeit in NORMAL_ZEITEN:
-    #     schedule.every().day.at(uhrzeit).do(
-    #         normaler_durchlauf, client
-    #     ).tag("normal")
-
-    # schedule.every(BREAKING_INTERVALL_MIN).minutes.do(
-    #     breaking_news_check, client, _zeige_naechsten_lauf
-    # ).tag("breaking")
-
-    # _zeige_naechsten_lauf()
-    # print("  Agent laeuft im Hintergrund. Beenden mit Strg+C.\n")
-
-    # letzter_status_ts = time.time()
-    # try:
-    #     while True:
-    #         schedule.run_pending()
-    #         if time.time() - letzter_status_ts >= 1800:
-    #             _zeige_naechsten_lauf()
-    #             letzter_status_ts = time.time()
-    #         time.sleep(30)
-    # except KeyboardInterrupt:
-    #     print("\n\nAgent gestoppt (Strg+C).")
-    #     logger.info("News Agent gestoppt.")
 
 
 if __name__ == "__main__":
