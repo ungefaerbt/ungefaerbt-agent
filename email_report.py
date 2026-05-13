@@ -10,11 +10,8 @@ Ausfuehren:
 import json
 import logging
 import os
-import smtplib
 import sys
 from datetime import datetime
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -29,9 +26,6 @@ log = logging.getLogger("email_report")
 # ---------------------------------------------------------------------------
 # Konfiguration
 # ---------------------------------------------------------------------------
-
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 587
 
 FARBE_BG        = "#1C1814"
 FARBE_CARD      = "#252018"
@@ -281,19 +275,15 @@ def html_erstellen(kandidaten):
 # Mail senden
 # ---------------------------------------------------------------------------
 
-def mail_senden(betreff, html_body, sender, recipient, password):
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = betreff
-    msg["From"]    = sender
-    msg["To"]      = recipient
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
-        server.login(sender, password)
-        server.sendmail(sender, recipient, msg.as_string())
+def mail_senden(betreff, html_body, sender, recipient, api_key):
+    import resend
+    resend.api_key = api_key
+    resend.Emails.send({
+        "from": sender,
+        "to": recipient,
+        "subject": betreff,
+        "html": html_body,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -317,12 +307,12 @@ def main():
 
     sender    = os.getenv("EMAIL_SENDER")
     recipient = os.getenv("EMAIL_RECIPIENT")
-    password  = os.getenv("EMAIL_APP_PASSWORD")
+    api_key   = os.getenv("RESEND_API_KEY")
 
     fehlend = [n for n, v in [
         ("EMAIL_SENDER", sender),
         ("EMAIL_RECIPIENT", recipient),
-        ("EMAIL_APP_PASSWORD", password),
+        ("RESEND_API_KEY", api_key),
     ] if not v]
     if fehlend:
         for name in fehlend:
@@ -350,19 +340,10 @@ def main():
     # Mail senden
     log.info("Sende Mail an %s ...", recipient)
     try:
-        mail_senden(betreff, html_body, sender, recipient, password)
+        mail_senden(betreff, html_body, sender, recipient, api_key)
         log.info("Mail erfolgreich gesendet: %s", betreff)
-    except smtplib.SMTPAuthenticationError:
-        log.error(
-            "SMTP-Authentifizierung fehlgeschlagen. "
-            "Prüfe EMAIL_APP_PASSWORD (Gmail App-Passwort erforderlich)."
-        )
-        sys.exit(1)
-    except smtplib.SMTPException as e:
-        log.error("SMTP-Fehler beim Versand: %s", e)
-        sys.exit(1)
     except Exception as e:
-        log.error("Unerwarteter Fehler beim Mailversand: %s", e)
+        log.error("Fehler beim Mailversand via Resend: %s", e)
         sys.exit(1)
 
 
