@@ -181,6 +181,17 @@ def normaler_durchlauf(client):
             "blindspot_score": bester.get("blindspot_score", 100),
             "silent_spectrums": bester.get("silent_spectrums", []),
             "spectrum_count": len(vorhandene_spektren),
+            "source_articles": [
+                {
+                    "source": a.get("source", ""),
+                    "political_leaning": a.get("political_leaning", ""),
+                    "headline": a.get("headline", ""),
+                    "summary": a.get("summary", a.get("teaser", "")),
+                    "link": a.get("link", ""),
+                    "timestamp": a.get("timestamp", ""),
+                }
+                for a in gruppe
+            ],
         })
         cluster_synthetisiert += 1
         print(f"  ✓ Cluster: {len(gruppe)} Artikel → 1 Story  [{alle_quellen[:55]}]")
