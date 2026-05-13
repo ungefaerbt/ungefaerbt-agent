@@ -8,37 +8,47 @@ gleiche Artikel geclustert werden - unabhaengig von der verwendeten Sprache
 oder den konkreten Keywords.
 
 Pipeline:
-    1. Text aus headline + summary + kategorie zusammenbauen
-    2. Embeddings via sentence-transformers generieren
-    3. Dimensionsreduktion via UMAP
+    1. Text aus headline + summary zusammenbauen
+    2. Embeddings via Anthropic Voyage API (voyage-multilingual-2)
+       Fallback: TF-IDF + SVD wenn API nicht verfügbar
+    3. Dimensionsreduktion via PCA
     4. Clustering via HDBSCAN
     5. Datum-Filter: Artikel die zu weit auseinanderliegen nicht zusammenklappen
     6. Ausreisser nachtraeglich zuweisen via Cosine-Similarity
     7. cluster_id + cluster_size in jeden Artikel schreiben
 
 Abhaengigkeiten:
-    pip install sentence-transformers umap-learn scikit-learn numpy
+    pip install anthropic scikit-learn numpy
 """
 
 import hashlib
+import logging
+import os
+import time
 from collections import Counter
 from datetime import datetime
 
 import numpy as np
 from sklearn.cluster import HDBSCAN
-from sentence_transformers import SentenceTransformer
-from umap import UMAP
+from sklearn.decomposition import PCA
+
+logger = logging.getLogger("cluster")
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    logger.addHandler(_h)
+logger.setLevel(logging.INFO)
+logger.propagate = False
 
 
 # ---------------------------------------------------------------------------
 # Konfiguration
 # ---------------------------------------------------------------------------
 
-EMBEDDING_MODEL = "paraphrase-multilingual-mpnet-base-v2"
+VOYAGE_MODEL    = "voyage-multilingual-2"
+VOYAGE_RPM      = 20          # max Requests pro Minute
+PCA_N_COMPONENTS = 5
 MAX_TAGE_ABSTAND = 3
-UMAP_N_COMPONENTS = 5
-UMAP_N_NEIGHBORS = 15
-UMAP_MIN_DIST = 0.0
 HDBSCAN_MIN_CLUSTER_SIZE = 2
 HDBSCAN_MIN_SAMPLES = 1
 SIMILARITY_THRESHOLD = 0.82
@@ -49,16 +59,76 @@ SIMILARITY_THRESHOLD = 0.82
 # ---------------------------------------------------------------------------
 
 def _artikel_zu_text(artikel):
-    """
-    Baut einen Eingabe-String fuer das Embedding-Modell.
-    Headline wird doppelt gewichtet da sie das Thema am praezisesten beschreibt.
-    """
     headline = artikel.get("headline", "")
-    summary = artikel.get("summary", "")
-    kategorie = artikel.get("kategorie", "") or artikel.get("tag", "")
-
-    teile = [headline, headline, summary, kategorie]
+    summary  = artikel.get("summary", "")
+    teile = [headline, headline, summary]
     return " ".join(t for t in teile if t).strip()
+
+
+# ---------------------------------------------------------------------------
+# Embeddings — Voyage API mit TF-IDF Fallback
+# ---------------------------------------------------------------------------
+
+def _voyage_embeddings(texte):
+    """
+    Erzeugt Embeddings via Anthropic Voyage API.
+    Gibt (embeddings_array, True) zurueck oder wirft eine Exception.
+    Rate-Limit: VOYAGE_RPM Requests pro Minute via sleep.
+    """
+    import anthropic
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    client  = anthropic.Anthropic(api_key=api_key)
+
+    alle = []
+    delay = 60.0 / VOYAGE_RPM  # Sekunden zwischen Requests
+
+    for i, text in enumerate(texte):
+        response = client.embeddings.create(
+            model=VOYAGE_MODEL,
+            input=[text],
+        )
+        alle.append(response.embeddings[0].embedding)
+        if i < len(texte) - 1:
+            time.sleep(delay)
+
+    arr = np.array(alle, dtype=np.float32)
+    # L2-Normalisierung
+    normen = np.linalg.norm(arr, axis=1, keepdims=True)
+    normen = np.where(normen == 0, 1, normen)
+    return arr / normen
+
+
+def _tfidf_embeddings(texte):
+    """
+    TF-IDF + TruncatedSVD Fallback wenn Voyage nicht verfuegbar.
+    Produziert 64-dimensionale normalisierte Vektoren.
+    """
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.decomposition import TruncatedSVD
+    from sklearn.preprocessing import normalize
+
+    n_components = min(64, len(texte) - 1) if len(texte) > 1 else 1
+    vec = TfidfVectorizer(max_features=5000, sublinear_tf=True)
+    X   = vec.fit_transform(texte)
+    svd = TruncatedSVD(n_components=n_components, random_state=42)
+    reduced = svd.fit_transform(X)
+    return normalize(reduced).astype(np.float32)
+
+
+def _embeddings_erstellen(texte):
+    """
+    Versucht Voyage, faellt auf TF-IDF zurueck.
+    Gibt normalisiertes numpy-Array zurueck.
+    """
+    try:
+        embeddings = _voyage_embeddings(texte)
+        logger.info("Voyage Embeddings: %s Texte via %s eingebettet.", len(texte), VOYAGE_MODEL)
+        return embeddings
+    except Exception as e:
+        logger.warning("Voyage fehlgeschlagen (%s) — TF-IDF Fallback wird genutzt.", e)
+        embeddings = _tfidf_embeddings(texte)
+        logger.info("TF-IDF Fallback: %s Texte eingebettet.", len(texte))
+        return embeddings
 
 
 def _datum_parsen(artikel):
@@ -219,32 +289,17 @@ def artikel_clustern(artikel_liste, embeddings_map=None):
     texte = [_artikel_zu_text(a) for a in artikel_liste]
 
     # ------------------------------------------------------------------
-    # 2. Embeddings generieren
+    # 2. Embeddings generieren (Voyage API, Fallback TF-IDF)
     # ------------------------------------------------------------------
-    model = SentenceTransformer(EMBEDDING_MODEL)
-    embeddings = model.encode(
-        texte,
-        show_progress_bar=True,
-        batch_size=64,
-        normalize_embeddings=True,
-    )
-    embeddings = np.array(embeddings)
+    embeddings = _embeddings_erstellen(texte)
 
     # ------------------------------------------------------------------
-    # 3. Dimensionsreduktion via UMAP
+    # 3. Dimensionsreduktion via PCA
     # ------------------------------------------------------------------
     if n > 2:
-        n_components = min(UMAP_N_COMPONENTS, n - 1)
-        n_neighbors = min(UMAP_N_NEIGHBORS, n - 1)
-
-        umap_model = UMAP(
-            n_components=n_components,
-            n_neighbors=n_neighbors,
-            min_dist=UMAP_MIN_DIST,
-            metric="cosine",
-            random_state=42,
-        )
-        reduced = umap_model.fit_transform(embeddings)
+        n_components = min(PCA_N_COMPONENTS, n - 1)
+        pca = PCA(n_components=n_components, random_state=42)
+        reduced = pca.fit_transform(embeddings)
     else:
         reduced = embeddings
 
