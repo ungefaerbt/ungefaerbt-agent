@@ -13,7 +13,7 @@ from config import ALLE_AUSRICHTUNGEN
 from cluster import schlagzeilen_clustern
 from fingerprint import fingerprint_erstellen
 from fetcher import schlagzeilen_abrufen
-from filter import ist_zu_vage
+from filter import ist_zu_vage, dedupe_by_url
 from sorter import feed_sortieren
 from writer import klassifizieren_mit_haiku, cluster_synthese_mit_sonnet
 
@@ -47,6 +47,12 @@ def normaler_durchlauf(client):
     uebersprungen = len(alle) - len(gefiltert)
     if uebersprungen:
         print(f"\n  {uebersprungen} Artikel wegen zu vager Headline übersprungen.")
+
+    # Schritt 1b: URL-Deduplizierung
+    vor_dedupe = len(gefiltert)
+    gefiltert = dedupe_by_url(gefiltert)
+    if vor_dedupe - len(gefiltert):
+        print(f"  {vor_dedupe - len(gefiltert)} Artikel wegen doppelter URL entfernt.")
 
     # Schritt 2: Fingerprint-Extraktion
     print(f"\nExtrahiere Fingerprints für {len(gefiltert)} Artikel ...")

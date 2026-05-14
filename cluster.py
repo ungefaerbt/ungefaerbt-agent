@@ -51,12 +51,35 @@ PCA_N_COMPONENTS = 5
 MAX_TAGE_ABSTAND = 3
 HDBSCAN_MIN_CLUSTER_SIZE = 2
 HDBSCAN_MIN_SAMPLES = 1
-SIMILARITY_THRESHOLD = 0.82
+EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "voyage")
+# SIMILARITY_THRESHOLD: Kalibriert für Voyage voyage-multilingual-2 Embeddings.
+# Mit sentence-transformers war 0.82 passend.
+# Voyage-Embeddings skalieren anders → 0.65 als Startwert.
+SIMILARITY_THRESHOLD = 0.65
 
 
 # ---------------------------------------------------------------------------
 # Hilfsfunktionen
 # ---------------------------------------------------------------------------
+
+_sentence_model_cache = None
+
+
+def get_sentence_model():
+    global _sentence_model_cache
+    if _sentence_model_cache is not None:
+        return _sentence_model_cache
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as e:
+        raise ImportError(
+            "sentence-transformers ist nicht installiert. "
+            "Bitte 'pip install sentence-transformers' ausführen oder "
+            "EMBEDDING_BACKEND=voyage setzen."
+        ) from e
+    _sentence_model_cache = SentenceTransformer("paraphrase-multilingual-mpnet-base-v2")
+    return _sentence_model_cache
+
 
 def _artikel_zu_text(artikel):
     headline = artikel.get("headline", "")
@@ -117,9 +140,18 @@ def _tfidf_embeddings(texte):
 
 def _embeddings_erstellen(texte):
     """
-    Versucht Voyage, faellt auf TF-IDF zurueck.
-    Gibt normalisiertes numpy-Array zurueck.
+    Erzeugt Embeddings je nach EMBEDDING_BACKEND.
+    "sentence_transformers": lokales Modell (gecacht, kein API-Key nötig)
+    "voyage" (default): Voyage API mit TF-IDF Fallback
     """
+    logger.info("Embedding-Backend: %s", EMBEDDING_BACKEND)
+
+    if EMBEDDING_BACKEND == "sentence_transformers":
+        model = get_sentence_model()
+        arr = model.encode(texte, normalize_embeddings=True, convert_to_numpy=True)
+        logger.info("SentenceTransformer: %s Texte eingebettet.", len(texte))
+        return arr.astype(np.float32)
+
     try:
         embeddings = _voyage_embeddings(texte)
         logger.info("Voyage Embeddings: %s Texte via %s eingebettet.", len(texte), VOYAGE_MODEL)
