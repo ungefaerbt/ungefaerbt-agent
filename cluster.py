@@ -28,6 +28,9 @@ import time
 from collections import Counter
 from datetime import datetime
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import numpy as np
 from sklearn.cluster import HDBSCAN
 from sklearn.decomposition import PCA

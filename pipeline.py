@@ -113,16 +113,30 @@ def main():
             os.path.join(PROJECT_DIR, "final_news_social.json"), "social_eval.py"
         )
 
-    # Schritt 5: supabase_upload.py
-    schritt_ausfuehren(
-        "supabase_upload.py",
-        [sys.executable, "supabase_upload.py", "final_news_social.json"],
-        dry_run,
-    )
+    # Schritt 5: supabase_upload.py (optional)
+    supabase_skip = False
     if not dry_run:
-        zwischendatei_pruefen(
-            os.path.join(PROJECT_DIR, "final_news_social.json"), "supabase_upload.py"
+        try:
+            import supabase as _supabase_check  # noqa: F401
+        except ImportError:
+            logger.info("supabase nicht installiert — Upload übersprungen.")
+            supabase_skip = True
+        if not supabase_skip and not (os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_KEY")):
+            logger.info("SUPABASE_URL/SUPABASE_KEY nicht gesetzt — Upload übersprungen.")
+            supabase_skip = True
+
+    if not supabase_skip:
+        logger.info("Starte: supabase_upload.py")
+        start = time.monotonic()
+        result = subprocess.run(
+            [sys.executable, "supabase_upload.py", "final_news_social.json"],
+            cwd=PROJECT_DIR,
         )
+        dauer = time.monotonic() - start
+        if result.returncode != 0:
+            logger.error("Schritt fehlgeschlagen: supabase_upload.py (exit code %s) — wird übersprungen.", result.returncode)
+        else:
+            logger.info("Fertig: supabase_upload.py (%.1fs)", dauer)
 
     # Schritt 6: email_report.py
     if not dry_run:
