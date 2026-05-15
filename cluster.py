@@ -52,10 +52,14 @@ MAX_TAGE_ABSTAND = 3
 HDBSCAN_MIN_CLUSTER_SIZE = 2
 HDBSCAN_MIN_SAMPLES = 1
 EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "voyage")
-# SIMILARITY_THRESHOLD: Kalibriert für Voyage voyage-multilingual-2 Embeddings.
-# Mit sentence-transformers war 0.82 passend.
-# Voyage-Embeddings skalieren anders → 0.65 als Startwert.
-SIMILARITY_THRESHOLD = 0.65
+SENTENCE_TRANSFORMER_MODEL = os.getenv(
+    "SENTENCE_TRANSFORMER_MODEL",
+    "paraphrase-multilingual-MiniLM-L12-v2"
+)
+SIMILARITY_THRESHOLD = float(os.getenv(
+    "SIMILARITY_THRESHOLD",
+    "0.82" if EMBEDDING_BACKEND == "sentence_transformers" else "0.65"
+))
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +81,8 @@ def get_sentence_model():
             "Bitte 'pip install sentence-transformers' ausführen oder "
             "EMBEDDING_BACKEND=voyage setzen."
         ) from e
-    _sentence_model_cache = SentenceTransformer("paraphrase-multilingual-mpnet-base-v2")
+    logger.info("SentenceTransformer-Modell: %s", SENTENCE_TRANSFORMER_MODEL)
+    _sentence_model_cache = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL)
     return _sentence_model_cache
 
 
