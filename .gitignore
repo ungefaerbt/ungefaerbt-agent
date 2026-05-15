@@ -19,6 +19,7 @@ run_output.txt
 *.err.log
 output.txt
 test_cluster_smoke.py
+final_social_candidates.json
 
 # Python
 __pycache__/
