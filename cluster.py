@@ -56,9 +56,13 @@ SENTENCE_TRANSFORMER_MODEL = os.getenv(
     "SENTENCE_TRANSFORMER_MODEL",
     "paraphrase-multilingual-MiniLM-L12-v2"
 )
+FASTEMBED_MODEL = os.getenv(
+    "FASTEMBED_MODEL",
+    "intfloat/multilingual-e5-small"
+)
 SIMILARITY_THRESHOLD = float(os.getenv(
     "SIMILARITY_THRESHOLD",
-    "0.82" if EMBEDDING_BACKEND == "sentence_transformers" else "0.65"
+    "0.80" if EMBEDDING_BACKEND in ("sentence_transformers", "fastembed") else "0.65"
 ))
 
 
@@ -67,6 +71,7 @@ SIMILARITY_THRESHOLD = float(os.getenv(
 # ---------------------------------------------------------------------------
 
 _sentence_model_cache = None
+_fastembed_model_cache = None
 
 
 def get_sentence_model():
@@ -84,6 +89,31 @@ def get_sentence_model():
     logger.info("SentenceTransformer-Modell: %s", SENTENCE_TRANSFORMER_MODEL)
     _sentence_model_cache = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL)
     return _sentence_model_cache
+
+
+def get_fastembed_model():
+    global _fastembed_model_cache
+    if _fastembed_model_cache is not None:
+        return _fastembed_model_cache
+    try:
+        from fastembed import TextEmbedding
+    except ImportError as e:
+        raise ImportError(
+            "fastembed ist nicht installiert. "
+            "Bitte 'pip install fastembed' ausführen oder "
+            "EMBEDDING_BACKEND=voyage setzen."
+        ) from e
+    logger.info("FastEmbed-Modell: %s", FASTEMBED_MODEL)
+    _fastembed_model_cache = TextEmbedding(FASTEMBED_MODEL)
+    return _fastembed_model_cache
+
+
+def _fastembed_embeddings(texte):
+    model = get_fastembed_model()
+    arr = np.array(list(model.embed(texte)), dtype=np.float32)
+    normen = np.linalg.norm(arr, axis=1, keepdims=True)
+    normen = np.where(normen == 0, 1, normen)
+    return arr / normen
 
 
 def _artikel_zu_text(artikel):
@@ -146,10 +176,16 @@ def _tfidf_embeddings(texte):
 def _embeddings_erstellen(texte):
     """
     Erzeugt Embeddings je nach EMBEDDING_BACKEND.
-    "sentence_transformers": lokales Modell (gecacht, kein API-Key nötig)
+    "fastembed": ONNX-basiert, kein torch, kein API-Key (Railway Free Tier)
+    "sentence_transformers": lokales PyTorch-Modell (gecacht, kein API-Key nötig)
     "voyage" (default): Voyage API mit TF-IDF Fallback
     """
     logger.info("Embedding-Backend: %s", EMBEDDING_BACKEND)
+
+    if EMBEDDING_BACKEND == "fastembed":
+        embeddings = _fastembed_embeddings(texte)
+        logger.info("FastEmbed: %s Texte eingebettet.", len(texte))
+        return embeddings
 
     if EMBEDDING_BACKEND == "sentence_transformers":
         model = get_sentence_model()
