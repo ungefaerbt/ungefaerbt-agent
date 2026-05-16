@@ -67,6 +67,7 @@ SIMILARITY_THRESHOLD = float(os.getenv(
     "SIMILARITY_THRESHOLD",
     "0.80" if EMBEDDING_BACKEND in ("sentence_transformers", "fastembed") else "0.65"
 ))
+ALLOW_TFIDF_FALLBACK = os.getenv("ALLOW_TFIDF_FALLBACK", "false").lower() == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -181,27 +182,38 @@ def _embeddings_erstellen(texte):
     Erzeugt Embeddings je nach EMBEDDING_BACKEND.
     "fastembed": ONNX-basiert, kein torch, kein API-Key (Railway Free Tier)
     "sentence_transformers": lokales PyTorch-Modell (gecacht, kein API-Key nötig)
-    "voyage" (default): Voyage API mit TF-IDF Fallback
+    "voyage" (default): Voyage API
+    Bei Fehler: TF-IDF Fallback nur wenn ALLOW_TFIDF_FALLBACK=true, sonst RuntimeError.
     """
-    logger.info("Embedding-Backend: %s", EMBEDDING_BACKEND)
-
-    if EMBEDDING_BACKEND == "fastembed":
-        embeddings = _fastembed_embeddings(texte)
-        logger.info("FastEmbed: %s Texte eingebettet.", len(texte))
-        return embeddings
-
-    if EMBEDDING_BACKEND == "sentence_transformers":
-        model = get_sentence_model()
-        arr = model.encode(texte, normalize_embeddings=True, convert_to_numpy=True)
-        logger.info("SentenceTransformer: %s Texte eingebettet.", len(texte))
-        return arr.astype(np.float32)
+    logger.info(
+        "Embedding-Backend: %s | ALLOW_TFIDF_FALLBACK: %s | Texte: %d",
+        EMBEDDING_BACKEND, ALLOW_TFIDF_FALLBACK, len(texte),
+    )
 
     try:
+        if EMBEDDING_BACKEND == "fastembed":
+            embeddings = _fastembed_embeddings(texte)
+            logger.info("FastEmbed: %s Texte eingebettet.", len(texte))
+            return embeddings
+
+        if EMBEDDING_BACKEND == "sentence_transformers":
+            model = get_sentence_model()
+            arr = model.encode(texte, normalize_embeddings=True, convert_to_numpy=True)
+            logger.info("SentenceTransformer: %s Texte eingebettet.", len(texte))
+            return arr.astype(np.float32)
+
         embeddings = _voyage_embeddings(texte)
         logger.info("Voyage Embeddings: %s Texte via %s eingebettet.", len(texte), VOYAGE_MODEL)
         return embeddings
+
     except Exception as e:
-        logger.warning("Voyage fehlgeschlagen (%s) — TF-IDF Fallback wird genutzt.", e)
+        logger.error("Embedding-Backend '%s' fehlgeschlagen: %s", EMBEDDING_BACKEND, e)
+        if not ALLOW_TFIDF_FALLBACK:
+            raise RuntimeError(
+                f"Embedding-Backend '{EMBEDDING_BACKEND}' fehlgeschlagen und "
+                f"ALLOW_TFIDF_FALLBACK ist nicht aktiv. Pipeline gestoppt. Fehler: {e}"
+            ) from e
+        logger.warning("ACHTUNG: TF-IDF-Fallback aktiv — Output nicht für Produktion geeignet.")
         embeddings = _tfidf_embeddings(texte)
         logger.info("TF-IDF Fallback: %s Texte eingebettet.", len(texte))
         return embeddings
