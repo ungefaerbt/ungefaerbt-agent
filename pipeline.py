@@ -142,11 +142,11 @@ def main():
     # Schritt 6: email_report.py
     if not dry_run:
         zwischendatei_pruefen(
-            os.path.join(PROJECT_DIR, "final_social_candidates.json"), "email_report.py"
+            os.path.join(OUTPUT_DIR, "final_social_candidates.json"), "email_report.py"
         )
     schritt_ausfuehren(
         "email_report.py",
-        [sys.executable, "email_report.py", "final_social_candidates.json"],
+        [sys.executable, "email_report.py", os.path.join(OUTPUT_DIR, "final_social_candidates.json")],
         dry_run,
     )
 
