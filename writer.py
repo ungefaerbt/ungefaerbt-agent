@@ -164,8 +164,16 @@ def cluster_synthese_mit_sonnet(client, cluster_artikel: list[dict]) -> dict:
 
 {artikel_block}
 
-Falls NEIN — sie beschreiben verschiedene Ereignisse — antworte ausschließlich mit:
+Falls NEIN — die Artikel haben thematisch nichts miteinander zu tun \
+(komplett unterschiedliche Ereignisse, Personen und Orte) — \
+antworte ausschließlich mit:
 {{"summary": "KEIN_CLUSTER"}}
+
+Wichtig: Antworte NICHT mit KEIN_CLUSTER wenn die Artikel dasselbe \
+Thema aus verschiedenen Winkeln beleuchten, verschiedene Aspekte \
+desselben Ereignisses zeigen, oder zeitlich zusammenhängende \
+Entwicklungen derselben Geschichte beschreiben. \
+Diese sollen synthetisiert werden.
 
 Falls JA — schreibe:
 1. Eine eigene Headline auf Deutsch (max. 10 Wörter). \
@@ -181,7 +189,7 @@ Antworte NUR mit diesem JSON (kein weiterer Text):
 
     antwort = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=400,
+        max_tokens=600,
         system=[{
             "type": "text",
             "text": f"{SYSTEM_PROMPT}\n\n{SYNTHESE_PROMPT}",
