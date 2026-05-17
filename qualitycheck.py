@@ -26,7 +26,7 @@ logger.propagate = False
 # ── Konfigurierbare Schwellenwerte ──────────────────────────────────────────
 SIMILARITY_THRESHOLD_IGNORE = 0.10
 SIMILARITY_THRESHOLD_MARK   = 0.20
-SIMILARITY_THRESHOLD_CLAUDE = 0.25
+SIMILARITY_THRESHOLD_CLAUDE = 0.20
 MAX_CLAUDE_CANDIDATES       = 20
 DEFAULT_MERGE_MODE          = "keep_best"
 

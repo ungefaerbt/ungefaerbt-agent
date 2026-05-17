@@ -181,6 +181,12 @@ Sachlich, klar, kein Clickbait, keine Meinung.
 2. Eine Zusammenfassung in 2–3 Sätzen. \
 Nur Fakten. Keine Quellenverweise. Deine eigene Sprache.
 
+Wichtig: Auch wenn die Artikel leicht unterschiedliche Aspekte \
+desselben Ereignisses beschreiben (z.B. verschiedene Opferzahlen, \
+verschiedene betroffene Orte desselben Angriffs, verschiedene \
+Reaktionen auf dasselbe Ereignis) — synthetisiere sie zu EINER Story. \
+Wähle die aktuellsten/vollständigsten Zahlen und Fakten.
+
 Antworte NUR mit diesem JSON (kein weiterer Text):
 {{
   "headline": "Deine neutrale Headline",
