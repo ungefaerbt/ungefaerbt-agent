@@ -26,6 +26,12 @@ CONTRAST_THRESHOLD_HIGH = 70
 CONTRAST_THRESHOLD_LOW = 50
 CONTRAST_MODEL = os.getenv("CONTRAST_MODEL", "claude-sonnet-4-6")
 
+# FIX: Scoring-Schwellen angepasst an realistisch erreichbare Scores
+# Vorher: social_post_worthy = score >= 70 → nie erreichbar (max ~60 ohne breaking)
+# Jetzt:  candidate >= 55, needs_review >= 42
+SOCIAL_THRESHOLD_CANDIDATE    = 55   # vorher implizit 70
+SOCIAL_THRESHOLD_NEEDS_REVIEW = 42   # vorher implizit 60
+
 CONTRAST_SYSTEM_PROMPT = """\
 Du analysierst Nachrichtenheadlines verschiedener Medien zur selben Geschichte.
 Bewerte ob die Headlines semantisch unterschiedlich framen — also ob sie unterschiedliche \
@@ -51,12 +57,19 @@ def _kontrast_fallback():
 
 
 def _parse_contrast_json(text):
+    # FIX: robusteres Parsing — mehrere Backtick-Formate abfangen
+    text = text.strip()
     if "```" in text:
         parts = text.split("```")
-        text = parts[1]
-        if text.startswith("json"):
-            text = text[4:]
-    return json.loads(text.strip())
+        # nimm den ersten nicht-leeren Block nach einem Backtick
+        for part in parts[1:]:
+            cleaned = part.strip()
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:].strip()
+            if cleaned:
+                text = cleaned
+                break
+    return json.loads(text)
 
 
 def kontrast_bonus_berechnen(contrast_score):
@@ -97,7 +110,8 @@ def kontrast_check_ausfuehren(client, story):
             system=CONTRAST_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
         )
-        ergebnis = _parse_contrast_json(antwort.content[0].text)
+        raw_text = antwort.content[0].text
+        ergebnis = _parse_contrast_json(raw_text)
         return {
             "has_contrast": bool(ergebnis.get("has_contrast", False)),
             "contrast_score": int(ergebnis.get("contrast_score", 0)),
@@ -105,6 +119,13 @@ def kontrast_check_ausfuehren(client, story):
             "contrast_pairs": ergebnis.get("contrast_pairs", []),
             "recommended_social_format": ergebnis.get("recommended_social_format", "keep_existing_format"),
         }
+    except json.JSONDecodeError as e:
+        logger.warning(
+            "Kontrast-Check JSON-Parse-Fehler für '%s': %s | Raw: %s",
+            story.get("headline", "?")[:60], e,
+            antwort.content[0].text[:200] if antwort and antwort.content else "no response",
+        )
+        return _kontrast_fallback()
     except Exception as e:
         logger.warning(
             "Kontrast-Check fehlgeschlagen für '%s': %s",
@@ -144,6 +165,10 @@ def source_count_bestimmen(story):
     cluster_size = story.get("cluster_size")
     if cluster_size:
         return int(cluster_size)
+    # FIX: source_articles als letzter Fallback
+    sa = story.get("source_articles")
+    if isinstance(sa, list):
+        return len(sa)
     return 1
 
 
@@ -158,15 +183,17 @@ def score_berechnen(story, source_count):
     headline = story.get("headline", "")
     summary = story.get("summary", "")
 
-    # 1. Relevanz
+    # 1. Relevanz — FIX: Schwellen angepasst, mehr Punkte für mittlere Relevanz
     if relevance >= 90:
         score += 30
     elif relevance >= 80:
-        score += 24
+        score += 25
     elif relevance >= 70:
-        score += 16
+        score += 20   # vorher 16
     elif relevance >= 60:
-        score += 8
+        score += 14   # vorher 8
+    elif relevance >= 50:
+        score += 8    # neu: auch 50-60 kriegt Punkte
 
     # 2. Top Story
     if story.get("is_top_story"):
@@ -178,19 +205,21 @@ def score_berechnen(story, source_count):
 
     # 4. Quellen / Cluster
     if source_count >= 5 or cluster_size >= 5:
-        score += 10
+        score += 12   # vorher 10
     elif source_count >= 3 or cluster_size >= 3:
-        score += 7
+        score += 9    # vorher 7
     elif source_count >= 2 or cluster_size >= 2:
-        score += 4
+        score += 5    # vorher 4
 
-    # 5. Barometer-Interesse
+    # 5. Barometer-Interesse — FIX: niedrigere Schwellen, mehr Punkte
     if blindspot_score >= 80:
-        score += 18
+        score += 16   # vorher 18
     elif blindspot_score >= 60:
-        score += 14
+        score += 12   # vorher 14
     elif blindspot_score >= 40:
-        score += 8
+        score += 8    # unverändert
+    elif blindspot_score >= 20:
+        score += 4    # neu: auch moderate Blindspot-Scores belohnen
 
     # 6. Spektren-Verteilung
     if spectrum_count >= 5:
@@ -198,11 +227,11 @@ def score_berechnen(story, source_count):
     elif spectrum_count == 4:
         score += 12
     elif spectrum_count == 3:
-        score += 8
+        score += 9    # vorher 8
     elif spectrum_count == 2:
         score += 6
     elif spectrum_count == 1 and source_count > 1:
-        score += 14
+        score += 12   # vorher 14 — leicht reduziert
 
     # 7. Abzüge
     if blindspot_label == "Einzelmeldung":
@@ -240,15 +269,25 @@ def social_risk_bestimmen(story, source_count):
     return "low"
 
 
-def suggested_format_bestimmen(story, source_count, social_post_worthy, social_status):
+def suggested_format_bestimmen(story, source_count, social_post_worthy, social_status,
+                                recommended_social_format=None):
     blindspot_label = story.get("blindspot_label", "")
     blindspot_score = story.get("blindspot_score", 0)
     spectrum_count = story.get("spectrum_count", 0)
     relevance_score = story.get("relevance_score", 0)
 
-    # 1. Nicht empfohlen und kein needs_review
-    if not social_post_worthy and social_status != "needs_review":
+    # 1. Nicht empfohlen
+    if not social_post_worthy and social_status == "not_recommended":
         return "no_post"
+
+    # FIX: Kontrast-Format von Claude berücksichtigen
+    # Vorher: recommended_social_format wurde komplett ignoriert
+    if recommended_social_format and recommended_social_format not in (
+        "keep_existing_format", "no_post", ""
+    ):
+        # Kontrast-Format hat Vorrang wenn Story worthy ist
+        if social_post_worthy:
+            return recommended_social_format
 
     # 2. Breaking
     if story.get("is_breaking") and source_count >= 2:
@@ -267,7 +306,7 @@ def suggested_format_bestimmen(story, source_count, social_post_worthy, social_s
         return "bias_barometer_carousel"
 
     # 6. Explainer
-    if relevance_score >= 80:
+    if relevance_score >= 70:   # vorher 80 — etwas gesenkt
         return "explainer_carousel"
 
     return "no_post"
@@ -287,7 +326,7 @@ def social_angle_bestimmen(story, social_post_worthy, social_status, source_coun
         return "Auffällige Verteilung: Mehrere Spektren fehlen in der Berichterstattung."
     if spectrum_count >= 4:
         return "Breit berichtete Story mit mehreren politischen Spektren."
-    if relevance_score >= 80:
+    if relevance_score >= 70:
         return "Hohe Relevanz und mehrere Quellen machen die Story erklärenswert."
     if spectrum_count >= 3:
         return "Mehrere politische Perspektiven vertreten."
@@ -306,14 +345,14 @@ def social_reason_bestimmen(story, social_post_worthy, social_status, source_cou
         return "Hoher Blindspot-Score und fehlende Spektren machen die Story interessant."
     if spectrum_count >= 4:
         return "Breite Berichterstattung über mehrere Spektren."
-    if relevance_score >= 80 and source_count >= 3:
+    if relevance_score >= 70 and source_count >= 3:
         return "Hohe Relevanz, mehrere Quellen und klares Bias-Barometer."
     if spectrum_count >= 3:
         return "Mehrere Spektren und ausreichende Quellenbreite."
     return "Nicht empfohlen wegen Einzelmeldung oder fehlender Qualität."
 
 
-def story_evaluieren(story, contrast_score=0):
+def story_evaluieren(story, contrast_score=0, recommended_social_format=None):
     source_count = source_count_bestimmen(story)
     if story.get("source_count") is None:
         story["source_count"] = source_count
@@ -325,21 +364,23 @@ def story_evaluieren(story, contrast_score=0):
     bonus = kontrast_bonus_berechnen(contrast_score)
     social_priority_score = min(100, max(0, social_post_score + bonus))
 
+    # FIX: Schwelle von 70 auf SOCIAL_THRESHOLD_CANDIDATE (55) gesenkt
     social_post_worthy = (
-        social_priority_score >= 70
+        social_priority_score >= SOCIAL_THRESHOLD_CANDIDATE
         and quality_status == "ready"
         and social_risk != "high"
     )
 
     if social_post_worthy:
         social_status = "candidate"
-    elif social_priority_score >= 60:
+    elif social_priority_score >= SOCIAL_THRESHOLD_NEEDS_REVIEW:
         social_status = "needs_review"
     else:
         social_status = "not_recommended"
 
     suggested_format = suggested_format_bestimmen(
-        story, source_count, social_post_worthy, social_status
+        story, source_count, social_post_worthy, social_status,
+        recommended_social_format=recommended_social_format,  # FIX: jetzt übergeben
     )
     social_angle = social_angle_bestimmen(
         story, social_post_worthy, social_status, source_count
@@ -436,10 +477,10 @@ def social_eval(input_pfad):
             contrast_score = kontrast["contrast_score"]
 
             # Kontrast-Felder in Story schreiben
-            story["has_contrast"]             = kontrast["has_contrast"]
-            story["contrast_score"]           = contrast_score
-            story["contrast_type"]            = kontrast["contrast_type"]
-            story["contrast_pairs"]           = kontrast["contrast_pairs"]
+            story["has_contrast"]              = kontrast["has_contrast"]
+            story["contrast_score"]            = contrast_score
+            story["contrast_type"]             = kontrast["contrast_type"]
+            story["contrast_pairs"]            = kontrast["contrast_pairs"]
             story["recommended_social_format"] = kontrast["recommended_social_format"]
 
             if kontrast["has_contrast"]:
@@ -448,12 +489,17 @@ def social_eval(input_pfad):
 
             # Score ohne Bonus — um "worthy durch Bonus" zu erkennen
             score_ohne_bonus = score_berechnen(story, source_count_bestimmen(story))
-            story_evaluieren(story, contrast_score=contrast_score)
 
-            # Hat der Bonus den Ausschlag gegeben?
+            # FIX: recommended_social_format jetzt an story_evaluieren weitergeben
+            story_evaluieren(
+                story,
+                contrast_score=contrast_score,
+                recommended_social_format=kontrast["recommended_social_format"],
+            )
+
             if (story["social_post_worthy"]
                     and kontrast_bonus_berechnen(contrast_score) > 0
-                    and score_ohne_bonus < 70):
+                    and score_ohne_bonus < SOCIAL_THRESHOLD_CANDIDATE):
                 worthy_durch_bonus += 1
 
             status = story["social_status"]
@@ -482,6 +528,7 @@ def social_eval(input_pfad):
         except Exception as e:
             headline = story.get("headline", "–")[:60]
             errors.append(f"Fehler bei '{headline}': {e}")
+            logger.error("Fehler bei Story '%s': %s", headline, e)
 
     social_post_worthy_count = candidate_count
     avg_score = round(score_summe / len(stories), 1) if stories else 0.0
@@ -489,8 +536,8 @@ def social_eval(input_pfad):
     top_candidates.sort(key=lambda x: x["social_priority_score"], reverse=True)
 
     logger.info(
-        "%s/%s Stories als social_post_worthy markiert.",
-        social_post_worthy_count, len(stories),
+        "%s/%s Stories als social_post_worthy markiert (Schwelle: %s).",
+        social_post_worthy_count, len(stories), SOCIAL_THRESHOLD_CANDIDATE,
     )
     if contrast_check_ran:
         logger.info(
@@ -520,32 +567,32 @@ def social_eval(input_pfad):
     with open("final_social_candidates.json", "w", encoding="utf-8") as f:
         json.dump(candidates, f, ensure_ascii=False, indent=2)
 
-    logger.info(
-        "%s Stories in final_social_candidates.json.", len(candidates)
-    )
+    logger.info("%s Stories in final_social_candidates.json.", len(candidates))
 
     # ---------------------------------------------------------------------------
     # social_eval_report.json
     # ---------------------------------------------------------------------------
     report = {
-        "timestamp":                 datetime.now().isoformat(),
-        "input_file":                input_pfad,
-        "stories_total":             len(stories),
-        "social_post_worthy_count":  social_post_worthy_count,
-        "candidate_count":           candidate_count,
-        "needs_review_count":        needs_review_count,
-        "not_recommended_count":     not_recommended_count,
-        "average_social_post_score": avg_score,
-        "format_counts":             format_counts,
-        "risk_counts":               risk_counts,
-        "top_candidates":            top_candidates,
-        "contrast_check_enabled":    ENABLE_CONTRAST_CHECK,
-        "contrast_check_ran":        contrast_check_ran,
-        "stories_with_contrast":     stories_with_contrast,
-        "average_contrast_score":    avg_contrast,
+        "timestamp":                     datetime.now().isoformat(),
+        "input_file":                    input_pfad,
+        "stories_total":                 len(stories),
+        "social_post_worthy_count":      social_post_worthy_count,
+        "candidate_count":               candidate_count,
+        "needs_review_count":            needs_review_count,
+        "not_recommended_count":         not_recommended_count,
+        "average_social_post_score":     avg_score,
+        "format_counts":                 format_counts,
+        "risk_counts":                   risk_counts,
+        "top_candidates":                top_candidates,
+        "contrast_check_enabled":        ENABLE_CONTRAST_CHECK,
+        "contrast_check_ran":            contrast_check_ran,
+        "stories_with_contrast":         stories_with_contrast,
+        "average_contrast_score":        avg_contrast,
+        "social_threshold_candidate":    SOCIAL_THRESHOLD_CANDIDATE,
+        "social_threshold_needs_review": SOCIAL_THRESHOLD_NEEDS_REVIEW,
         "contrast_check_skipped_reason": contrast_skipped_reason,
-        "warnings":                  [],
-        "errors":                    errors,
+        "warnings":                      [],
+        "errors":                        errors,
     }
 
     with open("social_eval_report.json", "w", encoding="utf-8") as f:

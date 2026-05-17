@@ -47,10 +47,18 @@ def spektren_normalisieren(story):
 
 
 def quellen_normalisieren(story):
-    """Gibt bereinigte Quellenliste zurück."""
+    """Gibt bereinigte Quellenliste zurück. Fallback auf source_articles."""
     if story.get("sources"):
         return normalisiere_liste(story["sources"])
-    return normalisiere_liste(story.get("source", ""))
+    quellen = normalisiere_liste(story.get("source", ""))
+    if not quellen and story.get("source_articles"):
+        # FIX: source_articles als Fallback wenn source fehlt oder leer
+        quellen = [
+            a.get("source", "").strip()
+            for a in story["source_articles"]
+            if a.get("source", "").strip()
+        ]
+    return quellen
 
 
 def barometer_berechnen(story):
@@ -65,13 +73,13 @@ def barometer_berechnen(story):
         notizen = list(story.get("quality_notes", []))
         if "missing_valid_political_leaning" not in notizen:
             notizen.append("missing_valid_political_leaning")
-        story["quality_notes"]        = notizen
-        story["source_count"]         = source_count
+        story["quality_notes"]         = notizen
+        story["source_count"]          = source_count
         story["spectrum_distribution"] = {s: 0 for s in ALLE_SPEKTREN}
-        story["spectrum_count"]       = 0
-        story["silent_spectrums"]     = list(ALLE_SPEKTREN)
-        story["blindspot_score"]      = 100
-        story["blindspot_label"]      = "Unklar"
+        story["spectrum_count"]        = 0
+        story["silent_spectrums"]      = list(ALLE_SPEKTREN)
+        story["blindspot_score"]       = 100
+        story["blindspot_label"]       = "Unklar"
         return story
 
     # spectrum_distribution (Duplikate zählen)
@@ -79,12 +87,14 @@ def barometer_berechnen(story):
     for s in spektren:
         distribution[s] += 1
 
-    unique_spektren   = [s for s in ALLE_SPEKTREN if distribution[s] > 0]
-    spectrum_count    = len(unique_spektren)
-    silent_spectrums  = [s for s in ALLE_SPEKTREN if distribution[s] == 0]
+    unique_spektren  = [s for s in ALLE_SPEKTREN if distribution[s] > 0]
+    spectrum_count   = len(unique_spektren)
+    silent_spectrums = [s for s in ALLE_SPEKTREN if distribution[s] == 0]
 
-    # Einzelmeldung
-    ist_einzelmeldung = cluster_size <= 1 or source_count <= 1
+    # FIX: AND statt OR — nur wenn BEIDE ≤ 1 ist es wirklich eine Einzelmeldung
+    # Vorher: cluster_size <= 1 OR source_count <= 1
+    # → Eine Story mit 4 Quellen aber cluster_size=1 wurde fälschlich als Einzelmeldung markiert
+    ist_einzelmeldung = cluster_size <= 1 and source_count <= 1
 
     if ist_einzelmeldung:
         blindspot_score = 100
@@ -142,14 +152,14 @@ def bias_barometer(input_pfad):
         json.dump(stories, f, ensure_ascii=False, indent=2)
 
     report = {
-        "timestamp":        datetime.now().isoformat(),
-        "input_file":       input_pfad,
-        "stories_total":    len(stories),
+        "timestamp":         datetime.now().isoformat(),
+        "input_file":        input_pfad,
+        "stories_total":     len(stories),
         "stories_processed": verarbeitet,
-        "label_counts":     label_counts,
-        "unclear_count":    unclear_count,
-        "warnings":         warnings,
-        "errors":           errors,
+        "label_counts":      label_counts,
+        "unclear_count":     unclear_count,
+        "warnings":          warnings,
+        "errors":            errors,
     }
 
     with open("bias_barometer_report.json", "w", encoding="utf-8") as f:
