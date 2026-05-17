@@ -122,7 +122,8 @@ def normaler_durchlauf(client):
             summary = synthese.get("summary", bester.get("summary", ""))
             cluster_headline = synthese.get("headline") or bester["headline"]
             if summary == "KEIN_CLUSTER":
-                print(f"    ↳ Kein echter Cluster – {len(gruppe)} Artikel verworfen.")
+                headlines = [a.get("headline", "?")[:60] for a in gruppe]
+                print(f"    ↳ Kein echter Cluster – {len(gruppe)} Artikel verworfen: {headlines}")
                 continue
         except Exception as e:
             print(f"    Synthese-Fehler Cluster {cid}: {e}")
