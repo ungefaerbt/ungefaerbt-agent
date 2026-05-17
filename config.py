@@ -688,8 +688,10 @@ QUELLEN = {
         "ausrichtung": "Rechts",
         "enabled": True,
         "feeds": [
-            {"ressort": "allgemein", "rss": "https://www.tichyseinblick.de/feed/",                                "enabled": True},
-            {"ressort": "politik",   "rss": "https://www.tichyseinblick.de/category/tichys-einblick/feed/",      "enabled": True},
+            {"ressort": "allgemein",  "rss": "https://www.tichyseinblick.de/feed/",                                          "enabled": True},
+            {"ressort": "politik",    "rss": "https://www.tichyseinblick.de/category/tichys-einblick/feed/",                 "enabled": True},
+            {"ressort": "wirtschaft", "rss": "https://www.tichyseinblick.de/category/wirtschaft-und-soziales/feed/",         "enabled": False},
+            {"ressort": "kolumnen",   "rss": "https://www.tichyseinblick.de/category/kolumnen/feed/",                        "enabled": False},
         ],
     },
     "achgut.com": {
@@ -704,7 +706,11 @@ QUELLEN = {
         "ausrichtung": "Mitte",
         "enabled": True,
         "feeds": [
-            {"ressort": "allgemein", "rss": "https://www.watson.de/api/1.0/rss/index.xml", "enabled": True},
+            {"ressort": "allgemein",    "rss": "https://www.watson.de/api/1.0/rss/index.xml",                          "enabled": True},
+            {"ressort": "politik",      "rss": "https://www.watson.de/api/1.0/rss/index.xml?channel=politik",          "enabled": True},
+            {"ressort": "wirtschaft",   "rss": "https://www.watson.de/api/1.0/rss/index.xml?channel=wirtschaft",       "enabled": True},
+            {"ressort": "gesellschaft", "rss": "https://www.watson.de/api/1.0/rss/index.xml?channel=gesellschaft",     "enabled": True},
+            {"ressort": "sport",        "rss": "https://www.watson.de/api/1.0/rss/index.xml?channel=sport",            "enabled": False},
         ],
     },
     # ── MITTE-LINKS (Ergänzung) ─────────────────────────────────
@@ -719,7 +725,8 @@ QUELLEN = {
         "ausrichtung": "Mitte-Links",
         "enabled": True,
         "feeds": [
-            {"ressort": "allgemein", "rss": "https://uebermedien.de/feed/", "enabled": True},
+            {"ressort": "allgemein",    "rss": "https://uebermedien.de/feed/",                          "enabled": True},
+            {"ressort": "medienkritik", "rss": "https://uebermedien.de/category/medienkritik/feed/",   "enabled": False},
         ],
     },
     # ── LINKS (Ergänzung) ───────────────────────────────────────
