@@ -256,51 +256,51 @@ QUELLEN = {
     },
     "netzpolitik.org": {
         "ausrichtung": "Links",
-        "enabled": False,
+        "enabled": True,
         "feeds": [
-            {"ressort": "allgemein", "rss": "https://netzpolitik.org/feed/", "enabled": False},
+            {"ressort": "allgemein", "rss": "https://netzpolitik.org/feed/", "enabled": True},
         ],
     },
     "junge-welt.de": {
         "ausrichtung": "Links",
-        "enabled": False,
+        "enabled": True,
         "feeds": [
-            {"ressort": "newsticker", "rss": "https://www.jungewelt.de/feeds/newsticker.rss", "enabled": False},
+            {"ressort": "newsticker", "rss": "https://www.jungewelt.de/feeds/newsticker.rss", "enabled": True},
         ],
     },
     "nd-aktuell.de": {
         "ausrichtung": "Links",
-        "enabled": False,
+        "enabled": True,
         "feeds": [
-            {"ressort": "aktuell", "rss": "https://www.nd-aktuell.de/rss/aktuell.php", "enabled": False},
+            {"ressort": "aktuell", "rss": "https://www.nd-aktuell.de/rss/aktuell.php", "enabled": True},
         ],
     },
     "jungle.world": {
         "ausrichtung": "Links",
-        "enabled": False,
+        "enabled": True,
         "feeds": [
-            {"ressort": "allgemein", "rss": "https://jungle.world/rss.xml", "enabled": False},
+            {"ressort": "allgemein", "rss": "https://jungle.world/rss.xml", "enabled": True},
         ],
     },
     "freitag.de": {
         "ausrichtung": "Links",
-        "enabled": False,
+        "enabled": True,
         "feeds": [
-            {"ressort": "allgemein", "rss": "https://www.freitag.de/rss.xml",            "enabled": False},
+            {"ressort": "allgemein", "rss": "https://www.freitag.de/rss.xml",            "enabled": True},
             {"ressort": "politik",   "rss": "https://www.freitag.de/politik/@@rss.xml",  "enabled": False},
             {"ressort": "kultur",    "rss": "https://www.freitag.de/kultur/@@rss.xml",   "enabled": False},
         ],
     },
     "correctiv.org": {
         "ausrichtung": "Links",
-        "enabled": False,
+        "enabled": True,
         "feeds": [
             {"ressort": "allgemein",                          "rss": "https://correctiv.org/feed/",                                                    "enabled": False},
-            {"ressort": "faktencheck",                        "rss": "https://correctiv.org/faktencheck/feed/",                                         "enabled": False},
-            {"ressort": "faktencheck_politik",                "rss": "https://correctiv.org/faktencheck/politik/feed/",                                 "enabled": False},
-            {"ressort": "faktencheck_gesellschaft",           "rss": "https://correctiv.org/faktencheck/gesellschaft/feed/",                            "enabled": False},
+            {"ressort": "faktencheck",                        "rss": "https://correctiv.org/faktencheck/feed/",                                         "enabled": True},
+            {"ressort": "faktencheck_politik",                "rss": "https://correctiv.org/faktencheck/politik/feed/",                                 "enabled": True},
+            {"ressort": "faktencheck_gesellschaft",           "rss": "https://correctiv.org/faktencheck/gesellschaft/feed/",                            "enabled": True},
             {"ressort": "faktencheck_klima",                  "rss": "https://correctiv.org/faktencheck/klima/feed/",                                   "enabled": False},
-            {"ressort": "faktencheck_europa",                 "rss": "https://correctiv.org/faktencheck/europa/feed/",                                  "enabled": False},
+            {"ressort": "faktencheck_europa",                 "rss": "https://correctiv.org/faktencheck/europa/feed/",                                  "enabled": True},
             {"ressort": "faktencheck_russland_ukraine",       "rss": "https://correctiv.org/faktencheck/russland-ukraine/feed/",                        "enabled": False},
             {"ressort": "faktencheck_wirtschaft_umwelt",      "rss": "https://correctiv.org/faktencheck/wirtschaft-und-umwelt/feed/",                   "enabled": False},
             {"ressort": "faktencheck_naher_osten",            "rss": "https://correctiv.org/faktencheck/naher-osten/feed/",                             "enabled": False},
@@ -329,9 +329,9 @@ QUELLEN = {
     },
     "manager-magazin.de": {
         "ausrichtung": "Mitte-Rechts",
-        "enabled": False,
+        "enabled": True,
         "feeds": [
-            {"ressort": "allgemein", "rss": "https://www.manager-magazin.de/news/index.rss", "enabled": False},
+            {"ressort": "allgemein", "rss": "https://www.manager-magazin.de/news/index.rss", "enabled": True},
         ],
     },
     "capital.de": {
@@ -409,14 +409,14 @@ QUELLEN = {
     # ── FACHMEDIEN ──────────────────────────────────────────────
     "heise.de": {
         "ausrichtung": "Mitte",
-        "enabled": False,
+        "enabled": True,
         "feeds": [
             {"ressort": "allgemein",     "rss": "https://www.heise.de/rss/heise-atom.xml",                        "enabled": False},
-            {"ressort": "top_news",      "rss": "https://www.heise.de/rss/heise-top-atom.xml",                    "enabled": False},
+            {"ressort": "top_news",      "rss": "https://www.heise.de/rss/heise-top-atom.xml",                    "enabled": True},
             {"ressort": "it",            "rss": "https://www.heise.de/rss/heise-Rubrik-IT-atom.xml",              "enabled": False},
             {"ressort": "wissen",        "rss": "https://www.heise.de/rss/heise-Rubrik-Wissen-atom.xml",          "enabled": False},
-            {"ressort": "netzpolitik",   "rss": "https://www.heise.de/rss/heise-Rubrik-Netzpolitik-atom.xml",     "enabled": False},
-            {"ressort": "wirtschaft",    "rss": "https://www.heise.de/rss/heise-Rubrik-Wirtschaft-atom.xml",      "enabled": False},
+            {"ressort": "netzpolitik",   "rss": "https://www.heise.de/rss/heise-Rubrik-Netzpolitik-atom.xml",     "enabled": True},
+            {"ressort": "wirtschaft",    "rss": "https://www.heise.de/rss/heise-Rubrik-Wirtschaft-atom.xml",      "enabled": True},
             {"ressort": "security",      "rss": "https://www.heise.de/security/feed.xml",                         "enabled": False},
             {"ressort": "mobiles",       "rss": "https://www.heise.de/rss/heise-Rubrik-Mobiles-atom.xml",         "enabled": False},
             {"ressort": "entertainment", "rss": "https://www.heise.de/rss/heise-Rubrik-Entertainment-atom.xml",   "enabled": False},
@@ -681,6 +681,53 @@ QUELLEN = {
             {"ressort": "sport",         "rss": "https://www.srf.ch/sport/bnf/rss/1648",     "enabled": False},
             {"ressort": "kultur",        "rss": "https://www.srf.ch/kultur/bnf/rss/1649",    "enabled": False},
             {"ressort": "wissen",        "rss": "https://www.srf.ch/wissen/bnf/rss/1650",    "enabled": False},
+        ],
+    },
+    # ── RECHTS (Ergänzung) ──────────────────────────────────────
+    "tichyseinblick.de": {
+        "ausrichtung": "Rechts",
+        "enabled": True,
+        "feeds": [
+            {"ressort": "allgemein", "rss": "https://www.tichyseinblick.de/feed/",                                "enabled": True},
+            {"ressort": "politik",   "rss": "https://www.tichyseinblick.de/category/tichys-einblick/feed/",      "enabled": True},
+        ],
+    },
+    "achgut.com": {
+        "ausrichtung": "Rechts",
+        "enabled": False,
+        "feeds": [
+            {"ressort": "allgemein", "rss": "https://www.achgut.com/rss", "enabled": False},
+        ],
+    },
+    # ── MITTE (Ergänzung) ───────────────────────────────────────
+    "watson.de": {
+        "ausrichtung": "Mitte",
+        "enabled": True,
+        "feeds": [
+            {"ressort": "allgemein", "rss": "https://www.watson.de/api/1.0/rss/index.xml", "enabled": True},
+        ],
+    },
+    # ── MITTE-LINKS (Ergänzung) ─────────────────────────────────
+    "republik.ch": {
+        "ausrichtung": "Mitte-Links",
+        "enabled": True,
+        "feeds": [
+            {"ressort": "allgemein", "rss": "https://www.republik.ch/feed.xml", "enabled": True},
+        ],
+    },
+    "uebermedien.de": {
+        "ausrichtung": "Mitte-Links",
+        "enabled": True,
+        "feeds": [
+            {"ressort": "allgemein", "rss": "https://uebermedien.de/feed/", "enabled": True},
+        ],
+    },
+    # ── LINKS (Ergänzung) ───────────────────────────────────────
+    "kontextwochenzeitung.de": {
+        "ausrichtung": "Links",
+        "enabled": False,
+        "feeds": [
+            {"ressort": "allgemein", "rss": "https://www.kontextwochenzeitung.de/feed/", "enabled": False},
         ],
     },
 }
