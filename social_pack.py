@@ -29,6 +29,52 @@ if not logger.handlers:
 logger.propagate = False
 
 
+_SPEKTRUM_PRIORITAET = ["Links", "Rechts", "Mitte-Links", "Mitte-Rechts", "Mitte"]
+
+
+def _source_headlines_extrahieren(story: dict, max_quellen: int = 5) -> list:
+    artikel = story.get("source_articles") or []
+    if not artikel:
+        return []
+
+    nach_leaning: dict = {}
+    for a in artikel:
+        leaning = (a.get("political_leaning") or "Unbekannt").strip()
+        nach_leaning.setdefault(leaning, []).append(a)
+
+    ausgewaehlt = []
+    gesehen_leanings: set = set()
+
+    # Zuerst je eine Quelle pro Spektrum, Enden zuerst
+    for leaning in _SPEKTRUM_PRIORITAET:
+        if len(ausgewaehlt) >= max_quellen:
+            break
+        if leaning in nach_leaning and leaning not in gesehen_leanings:
+            a = nach_leaning[leaning][0]
+            ausgewaehlt.append({
+                "source":   a.get("source", ""),
+                "headline": a.get("headline", ""),
+                "leaning":  leaning,
+            })
+            gesehen_leanings.add(leaning)
+
+    # Auffüllen mit noch nicht enthaltenen Artikeln (original Reihenfolge)
+    schon_drin = {(e["source"], e["headline"]) for e in ausgewaehlt}
+    for a in artikel:
+        if len(ausgewaehlt) >= max_quellen:
+            break
+        key = (a.get("source", ""), a.get("headline", ""))
+        if key not in schon_drin:
+            ausgewaehlt.append({
+                "source":   a.get("source", ""),
+                "headline": a.get("headline", ""),
+                "leaning":  (a.get("political_leaning") or "Unbekannt").strip(),
+            })
+            schon_drin.add(key)
+
+    return ausgewaehlt
+
+
 def _summary_kuerzen(summary: str, max_saetze: int = 2) -> str:
     if not summary:
         return ""
@@ -59,6 +105,7 @@ def _kontrast_post(story: dict) -> dict:
         "headline":              thema,
         "social_priority_score": story.get("social_priority_score", 0),
         "suggested_format":      story.get("suggested_social_format", ""),
+        "source_headlines":      _source_headlines_extrahieren(story),
     }
 
 
@@ -78,6 +125,7 @@ def _standard_post(story: dict) -> dict:
         "headline":              headline,
         "social_priority_score": story.get("social_priority_score", 0),
         "suggested_format":      story.get("suggested_social_format", ""),
+        "source_headlines":      _source_headlines_extrahieren(story),
     }
 
 
