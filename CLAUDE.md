@@ -38,11 +38,11 @@ Wir haben die Informationen – wir schreiben sie neutral neu.
 - Alle Module schreiben ihre JSON-Outputs nach `output/`
 - Niemals auto-deployen auf Railway
 - `ALLOW_TFIDF_FALLBACK=false` in `.env` — Pipeline bricht bei Embedding-Fehler ab
-- Embedding-Backend: fastembed (primär) → TF-IDF (Fallback)
+- Embedding-Backend: Voyage AI (primär) → FastEmbed (Fallback 1) → TF-IDF (Fallback 2)
 
 ## ENV-Variablen
 
-`ANTHROPIC_API_KEY`, `EMBEDDING_BACKEND`, `SIMILARITY_THRESHOLD`,
+`ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `EMBEDDING_BACKEND`, `SIMILARITY_THRESHOLD`,
 `ALLOW_TFIDF_FALLBACK`, `CONTRAST_MODEL`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY`
 
 ## Was Claude Code nie tun soll
