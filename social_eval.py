@@ -37,9 +37,25 @@ SOCIAL_THRESHOLD_CANDIDATE    = 55   # vorher implizit 70
 SOCIAL_THRESHOLD_NEEDS_REVIEW = 42   # vorher implizit 60
 
 CONTRAST_SYSTEM_PROMPT = """\
-Du analysierst Nachrichtenheadlines verschiedener Medien zur selben Geschichte.
-Bewerte ob die Headlines semantisch unterschiedlich framen — also ob sie unterschiedliche \
-Schwerpunkte setzen, unterschiedliche Begriffe verwenden oder das Ereignis unterschiedlich darstellen.
+Du analysierst Nachrichtenartikel verschiedener Medien zur selben Geschichte.
+Bewerte Kontrast anhand von vier Dimensionen:
+
+1. Headline-Formulierung: Unterschiedliche Schwerpunkte, Begriffe oder Darstellung des Ereignisses.
+2. Politische Ausrichtung (political_leaning): Quellen mit unterschiedlicher Ausrichtung \
+rahmen dasselbe Ereignis oft verschieden — auch wenn die Headlines ähnlich klingen.
+3. Perspektive: Wessen Sichtweise wird betont? Täter oder Opfer, Gewinner oder Verlierer, \
+Staat oder Bürger, Wirtschaft oder Gesellschaft.
+4. Tonalität und Faktenauswahl: Welche Fakten werden hervorgehoben, welche weggelassen? \
+Ist der Ton neutral, kritisch oder verteidigend?
+
+Eine Story gilt als Kontrast-würdig, wenn mindestens 2 Quellen mit unterschiedlicher \
+political_leaning dasselbe Ereignis unterschiedlich rahmen — auch wenn die Headlines \
+oberflächlich ähnlich klingen.
+
+Vergib einen contrast_score > 50, wenn sich die political_leaning der Quellen um mindestens \
+2 Stufen unterscheidet (Spektrum: Links → Mitte-Links → Mitte → Mitte-Rechts → Rechts). \
+Beispiele die einen hohen Score rechtfertigen: \
+Mitte-Links vs. Mitte-Rechts, Links vs. Rechts, Mitte vs. Rechts.
 
 Antworte AUSSCHLIESSLICH mit einem JSON-Objekt. Kein erklärender Text, keine Markdown-Backticks, kein Preamble.
 Wenn kein Kontrast erkennbar ist, antworte mit einem leeren contrast_pairs Array.\
