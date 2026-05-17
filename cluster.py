@@ -9,8 +9,8 @@ oder den konkreten Keywords.
 
 Pipeline:
     1. Text aus headline + summary zusammenbauen
-    2. Embeddings via Anthropic Voyage API (voyage-multilingual-2)
-       Fallback: TF-IDF + SVD wenn API nicht verfügbar
+    2. Embeddings via FastEmbed (ONNX-basiert, kein API-Key)
+       Fallback: TF-IDF + SVD wenn Backend nicht verfügbar
     3. Dimensionsreduktion via PCA
     4. Clustering via HDBSCAN
     5. Datum-Filter: Artikel die zu weit auseinanderliegen nicht zusammenklappen
@@ -48,8 +48,6 @@ logger.propagate = False
 # Konfiguration
 # ---------------------------------------------------------------------------
 
-VOYAGE_MODEL    = "voyage-multilingual-2"
-VOYAGE_RPM      = 20          # max Requests pro Minute
 PCA_N_COMPONENTS = 5
 MAX_TAGE_ABSTAND = 3
 HDBSCAN_MIN_CLUSTER_SIZE = 2
@@ -131,35 +129,6 @@ def _artikel_zu_text(artikel):
 # Embeddings — Voyage API mit TF-IDF Fallback
 # ---------------------------------------------------------------------------
 
-def _voyage_embeddings(texte):
-    """
-    Erzeugt Embeddings via Anthropic Voyage API.
-    Gibt (embeddings_array, True) zurueck oder wirft eine Exception.
-    Rate-Limit: VOYAGE_RPM Requests pro Minute via sleep.
-    """
-    import anthropic
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    client  = anthropic.Anthropic(api_key=api_key)
-
-    alle = []
-    delay = 60.0 / VOYAGE_RPM  # Sekunden zwischen Requests
-
-    for i, text in enumerate(texte):
-        response = client.embeddings.create(
-            model=VOYAGE_MODEL,
-            input=[text],
-        )
-        alle.append(response.embeddings[0].embedding)
-        if i < len(texte) - 1:
-            time.sleep(delay)
-
-    arr = np.array(alle, dtype=np.float32)
-    # L2-Normalisierung
-    normen = np.linalg.norm(arr, axis=1, keepdims=True)
-    normen = np.where(normen == 0, 1, normen)
-    return arr / normen
-
-
 def _tfidf_embeddings(texte):
     """
     TF-IDF + TruncatedSVD Fallback wenn Voyage nicht verfuegbar.
@@ -201,10 +170,6 @@ def _embeddings_erstellen(texte):
             arr = model.encode(texte, normalize_embeddings=True, convert_to_numpy=True)
             logger.info("SentenceTransformer: %s Texte eingebettet.", len(texte))
             return arr.astype(np.float32)
-
-        embeddings = _voyage_embeddings(texte)
-        logger.info("Voyage Embeddings: %s Texte via %s eingebettet.", len(texte), VOYAGE_MODEL)
-        return embeddings
 
     except Exception as e:
         logger.error("Embedding-Backend '%s' fehlgeschlagen: %s", EMBEDDING_BACKEND, e)
