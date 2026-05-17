@@ -114,6 +114,17 @@ def main():
             os.path.join(OUTPUT_DIR, "final_news_social.json"), "social_eval.py"
         )
 
+    # Schritt 4b: social_pack.py
+    schritt_ausfuehren(
+        "social_pack.py",
+        [sys.executable, "social_pack.py", os.path.join(OUTPUT_DIR, "final_social_candidates.json")],
+        dry_run,
+    )
+    if not dry_run:
+        zwischendatei_pruefen(
+            os.path.join(OUTPUT_DIR, "social_pack_output.json"), "social_pack.py"
+        )
+
     # Schritt 5: supabase_upload.py (optional)
     supabase_skip = False
     if not dry_run:
