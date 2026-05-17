@@ -3,6 +3,10 @@ import logging
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
+
+OUTPUT_DIR = Path(__file__).parent / "output"
+OUTPUT_DIR.mkdir(exist_ok=True)
 
 logger = logging.getLogger("social_eval")
 logger.setLevel(logging.INFO)
@@ -106,7 +110,7 @@ def kontrast_check_ausfuehren(client, story):
     try:
         antwort = client.messages.create(
             model=CONTRAST_MODEL,
-            max_tokens=600,
+            max_tokens=1000,
             system=CONTRAST_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
         )
@@ -552,7 +556,7 @@ def social_eval(input_pfad):
     # ---------------------------------------------------------------------------
     # final_news_social.json
     # ---------------------------------------------------------------------------
-    with open("final_news_social.json", "w", encoding="utf-8") as f:
+    with open(OUTPUT_DIR / "final_news_social.json", "w", encoding="utf-8") as f:
         json.dump(stories, f, ensure_ascii=False, indent=2)
 
     # ---------------------------------------------------------------------------
@@ -564,7 +568,7 @@ def social_eval(input_pfad):
     ]
     candidates.sort(key=lambda x: x.get("social_priority_score", 0), reverse=True)
 
-    with open("final_social_candidates.json", "w", encoding="utf-8") as f:
+    with open(OUTPUT_DIR / "final_social_candidates.json", "w", encoding="utf-8") as f:
         json.dump(candidates, f, ensure_ascii=False, indent=2)
 
     logger.info("%s Stories in final_social_candidates.json.", len(candidates))
@@ -595,7 +599,7 @@ def social_eval(input_pfad):
         "errors":                        errors,
     }
 
-    with open("social_eval_report.json", "w", encoding="utf-8") as f:
+    with open(OUTPUT_DIR / "social_eval_report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     logger.info(

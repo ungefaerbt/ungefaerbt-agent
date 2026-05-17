@@ -2,6 +2,10 @@ import json
 import logging
 import sys
 from datetime import datetime
+from pathlib import Path
+
+OUTPUT_DIR = Path(__file__).parent / "output"
+OUTPUT_DIR.mkdir(exist_ok=True)
 
 logger = logging.getLogger("bias_barometer")
 logger.setLevel(logging.INFO)
@@ -148,7 +152,7 @@ def bias_barometer(input_pfad):
 
     logger.info("%s/%s Stories verarbeitet.", verarbeitet, len(stories))
 
-    with open("final_news_with_barometer.json", "w", encoding="utf-8") as f:
+    with open(OUTPUT_DIR / "final_news_with_barometer.json", "w", encoding="utf-8") as f:
         json.dump(stories, f, ensure_ascii=False, indent=2)
 
     report = {
@@ -162,7 +166,7 @@ def bias_barometer(input_pfad):
         "errors":            errors,
     }
 
-    with open("bias_barometer_report.json", "w", encoding="utf-8") as f:
+    with open(OUTPUT_DIR / "bias_barometer_report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     logger.info(

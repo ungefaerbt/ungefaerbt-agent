@@ -5,6 +5,10 @@ import os
 import time
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
+
+OUTPUT_DIR = Path(__file__).parent / "output"
+OUTPUT_DIR.mkdir(exist_ok=True)
 
 import anthropic
 from dotenv import load_dotenv
@@ -167,7 +171,7 @@ def normaler_durchlauf(client):
 
     ergebnisse = feed_sortieren(finale_artikel)
 
-    dateiname = f"news_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    dateiname = OUTPUT_DIR / f"news_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(dateiname, "w", encoding="utf-8") as f:
         json.dump(ergebnisse, f, ensure_ascii=True, indent=2)
 

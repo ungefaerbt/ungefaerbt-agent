@@ -20,6 +20,7 @@ if not logger.handlers:
 logger.propagate = False
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(PROJECT_DIR, "output")
 
 
 def schritt_ausfuehren(name, args, dry_run=False):
@@ -37,7 +38,7 @@ def schritt_ausfuehren(name, args, dry_run=False):
 
 
 def neue_news_datei_finden(nach_zeitpunkt):
-    muster = os.path.join(PROJECT_DIR, "news_*.json")
+    muster = os.path.join(OUTPUT_DIR, "news_*.json")
     kandidaten = [
         p for p in glob.glob(muster)
         if os.path.getmtime(p) >= nach_zeitpunkt
@@ -88,29 +89,29 @@ def main():
     )
     if not dry_run:
         zwischendatei_pruefen(
-            os.path.join(PROJECT_DIR, "final_news_checked.json"), "qualitycheck.py"
+            os.path.join(OUTPUT_DIR, "final_news_checked.json"), "qualitycheck.py"
         )
 
     # Schritt 3: bias_barometer.py
     schritt_ausfuehren(
         "bias_barometer.py",
-        [sys.executable, "bias_barometer.py", "final_news_checked.json"],
+        [sys.executable, "bias_barometer.py", os.path.join(OUTPUT_DIR, "final_news_checked.json")],
         dry_run,
     )
     if not dry_run:
         zwischendatei_pruefen(
-            os.path.join(PROJECT_DIR, "final_news_with_barometer.json"), "bias_barometer.py"
+            os.path.join(OUTPUT_DIR, "final_news_with_barometer.json"), "bias_barometer.py"
         )
 
     # Schritt 4: social_eval.py
     schritt_ausfuehren(
         "social_eval.py",
-        [sys.executable, "social_eval.py", "final_news_with_barometer.json"],
+        [sys.executable, "social_eval.py", os.path.join(OUTPUT_DIR, "final_news_with_barometer.json")],
         dry_run,
     )
     if not dry_run:
         zwischendatei_pruefen(
-            os.path.join(PROJECT_DIR, "final_news_social.json"), "social_eval.py"
+            os.path.join(OUTPUT_DIR, "final_news_social.json"), "social_eval.py"
         )
 
     # Schritt 5: supabase_upload.py (optional)
@@ -129,7 +130,7 @@ def main():
         logger.info("Starte: supabase_upload.py")
         start = time.monotonic()
         result = subprocess.run(
-            [sys.executable, "supabase_upload.py", "final_news_social.json"],
+            [sys.executable, "supabase_upload.py", os.path.join(OUTPUT_DIR, "final_news_social.json")],
             cwd=PROJECT_DIR,
         )
         dauer = time.monotonic() - start

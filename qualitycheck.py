@@ -4,6 +4,10 @@ import os
 import sys
 from datetime import datetime
 from itertools import combinations
+from pathlib import Path
+
+OUTPUT_DIR = Path(__file__).parent / "output"
+OUTPUT_DIR.mkdir(exist_ok=True)
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -348,7 +352,7 @@ def qualitycheck(input_pfad):
     )
 
     # Output schreiben
-    with open("final_news_checked.json", "w", encoding="utf-8") as f:
+    with open(OUTPUT_DIR / "final_news_checked.json", "w", encoding="utf-8") as f:
         json.dump(finale_stories, f, ensure_ascii=False, indent=2)
 
     warnings = []
@@ -375,7 +379,7 @@ def qualitycheck(input_pfad):
         "errors":                  [],
     }
 
-    with open("quality_report.json", "w", encoding="utf-8") as f:
+    with open(OUTPUT_DIR / "quality_report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     logger.info("qualitycheck abgeschlossen → final_news_checked.json, quality_report.json")
