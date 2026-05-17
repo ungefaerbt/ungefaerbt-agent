@@ -14,6 +14,7 @@ Output: output/social_pack_output.json
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -30,6 +31,8 @@ logger.propagate = False
 
 
 _SPEKTRUM_PRIORITAET = ["Links", "Rechts", "Mitte-Links", "Mitte-Rechts", "Mitte"]
+_LINKS_LEANINGS      = {"Links", "Mitte-Links"}
+_RECHTS_LEANINGS     = {"Rechts", "Mitte-Rechts"}
 
 
 def _source_headlines_extrahieren(story: dict, max_quellen: int = 5) -> list:
@@ -75,6 +78,44 @@ def _source_headlines_extrahieren(story: dict, max_quellen: int = 5) -> list:
     return ausgewaehlt
 
 
+def _perspektiven_via_haiku(source_headlines: list) -> tuple:
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return "", ""
+
+    links_quellen  = [e for e in source_headlines if e["leaning"] in _LINKS_LEANINGS]
+    rechts_quellen = [e for e in source_headlines if e["leaning"] in _RECHTS_LEANINGS]
+    if not links_quellen or not rechts_quellen:
+        return "", ""
+
+    links_text  = "; ".join(f'{e["source"]}: "{e["headline"]}"' for e in links_quellen)
+    rechts_text = "; ".join(f'{e["source"]}: "{e["headline"]}"' for e in rechts_quellen)
+
+    prompt = (
+        f"Links/Mitte-Links: {links_text}\n"
+        f"Rechts/Mitte-Rechts: {rechts_text}\n\n"
+        "Antworte mit exakt zwei Zeilen (kein weiterer Text):\n"
+        "LINKS: [1 Satz wie linke Seite berichtet]\n"
+        "RECHTS: [1 Satz wie rechte Seite berichtet]"
+    )
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        antwort = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = antwort.content[0].text.strip()
+        left  = next((l[6:].strip()  for l in text.splitlines() if l.startswith("LINKS:")),  "")
+        right = next((l[7:].strip() for l in text.splitlines() if l.startswith("RECHTS:")), "")
+        return left, right
+    except Exception as e:
+        logger.warning("Perspektiven-Call fehlgeschlagen: %s", e)
+        return "", ""
+
+
 def _summary_kuerzen(summary: str, max_saetze: int = 2) -> str:
     if not summary:
         return ""
@@ -98,6 +139,11 @@ def _kontrast_post(story: dict) -> dict:
         f"➡️ Was steckt dahinter? Link in Bio."
     )
 
+    source_hl = _source_headlines_extrahieren(story)
+    left_p, right_p = "", ""
+    if story.get("suggested_social_format") == "a_sagt_x_b_sagt_y":
+        left_p, right_p = _perspektiven_via_haiku(source_hl)
+
     return {
         "post_text":             post_text,
         "post_type":             "contrast",
@@ -105,7 +151,9 @@ def _kontrast_post(story: dict) -> dict:
         "headline":              thema,
         "social_priority_score": story.get("social_priority_score", 0),
         "suggested_format":      story.get("suggested_social_format", ""),
-        "source_headlines":      _source_headlines_extrahieren(story),
+        "source_headlines":      source_hl,
+        "left_perspective":      left_p,
+        "right_perspective":     right_p,
     }
 
 
@@ -118,6 +166,11 @@ def _standard_post(story: dict) -> dict:
         post_text += f"\n\n{summary}"
     post_text += "\n\n➡️ Link in Bio."
 
+    source_hl = _source_headlines_extrahieren(story)
+    left_p, right_p = "", ""
+    if story.get("suggested_social_format") == "a_sagt_x_b_sagt_y":
+        left_p, right_p = _perspektiven_via_haiku(source_hl)
+
     return {
         "post_text":             post_text,
         "post_type":             "standard",
@@ -125,7 +178,9 @@ def _standard_post(story: dict) -> dict:
         "headline":              headline,
         "social_priority_score": story.get("social_priority_score", 0),
         "suggested_format":      story.get("suggested_social_format", ""),
-        "source_headlines":      _source_headlines_extrahieren(story),
+        "source_headlines":      source_hl,
+        "left_perspective":      left_p,
+        "right_perspective":     right_p,
     }
 
 

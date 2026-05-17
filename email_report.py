@@ -7,11 +7,15 @@ Ausfuehren:
     python email_report.py final_social_candidates.json
 """
 
+import base64
 import json
 import logging
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
+
+import barometer_png as _barometer
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -120,6 +124,64 @@ def _kontrast_html(story):
     </div>"""
 
 
+def _barometer_html(story) -> str:
+    try:
+        pfad = _barometer.barometer_erstellen(story)
+        b64  = base64.b64encode(pfad.read_bytes()).decode()
+        return (
+            f'<div style="margin:12px 0;">'
+            f'<img src="data:image/png;base64,{b64}" '
+            f'width="560" height="22" style="display:block;border-radius:3px;" '
+            f'alt="Spektrum-Barometer"/>'
+            f'</div>'
+        )
+    except Exception:
+        return ""
+
+
+def _source_headlines_html(post_data: dict) -> str:
+    eintraege = post_data.get("source_headlines") or []
+    if not eintraege:
+        return ""
+    zeilen = ""
+    for e in eintraege:
+        src   = _esc(e.get("source", ""))
+        hl    = _esc(e.get("headline", ""))
+        lean  = _esc(e.get("leaning", ""))
+        lean_tag = f' <span style="font-size:11px;">[{lean}]</span>' if lean else ""
+        zeilen += (
+            f'<p style="margin:3px 0;font-size:12px;color:{FARBE_MUTED};">'
+            f'<span style="color:{FARBE_TEXT};">{src}</span>{lean_tag}'
+            f': "{hl}"</p>'
+        )
+    return f"""
+    <div style="margin:14px 0;">
+      <p style="margin:0 0 6px;font-size:11px;font-weight:600;letter-spacing:.05em;
+                text-transform:uppercase;color:{FARBE_MUTED};">Originaltitel (Auswahl)</p>
+      {zeilen}
+    </div>"""
+
+
+def _perspektiven_html(post_data: dict) -> str:
+    left  = _esc(post_data.get("left_perspective", ""))
+    right = _esc(post_data.get("right_perspective", ""))
+    if not left and not right:
+        return ""
+    return f"""
+    <div style="margin:14px 0;display:flex;gap:10px;">
+      <div style="flex:1;padding:10px;background:{FARBE_BG};border-left:3px solid #7BAE7F;border-radius:4px;">
+        <p style="margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:.05em;
+                  text-transform:uppercase;color:#7BAE7F;">Links</p>
+        <p style="margin:0;font-size:13px;color:{FARBE_TEXT};">{left}</p>
+      </div>
+      <div style="flex:1;padding:10px;background:{FARBE_BG};border-left:3px solid #E8A87C;border-radius:4px;">
+        <p style="margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:.05em;
+                  text-transform:uppercase;color:#E8A87C;">Rechts</p>
+        <p style="margin:0;font-size:13px;color:{FARBE_TEXT};">{right}</p>
+      </div>
+    </div>"""
+
+
 def _quellartikel_html(story):
     quellen = story.get("source_articles") or []
     if not quellen:
@@ -155,7 +217,7 @@ def _quellartikel_html(story):
     </div>"""
 
 
-def _story_block_html(rang, story):
+def _story_block_html(rang, story, post_data=None):
     headline   = _esc(story.get("headline", "–"))
     summary    = _esc(story.get("summary", ""))
     kategorie  = _esc(story.get("category", ""))
@@ -207,8 +269,17 @@ def _story_block_html(rang, story):
     {f'<p style="margin:4px 0;font-size:13px;color:{FARBE_TEXT};">{angle}</p>' if angle else ''}
     {f'<p style="margin:4px 0 0;font-size:12px;color:{FARBE_MUTED};">{reason}</p>' if reason else ''}
 
+    <!-- Barometer -->
+    {_barometer_html(story)}
+
     <!-- Kontrast -->
     {_kontrast_html(story)}
+
+    <!-- Perspektiven (nur bei a_sagt_x_b_sagt_y) -->
+    {_perspektiven_html(post_data) if post_data else ""}
+
+    <!-- Originaltitel (source_headlines) -->
+    {_source_headlines_html(post_data) if post_data else ""}
 
     <!-- Quellartikel -->
     {_quellartikel_html(story)}
@@ -216,11 +287,25 @@ def _story_block_html(rang, story):
   </div>"""
 
 
+def _post_lookup_laden() -> dict:
+    pfad = Path(__file__).parent / "output" / "social_pack_output.json"
+    if not pfad.exists():
+        return {}
+    try:
+        with open(pfad, encoding="utf-8") as f:
+            posts = json.load(f)
+        return {p["headline"]: p for p in posts if p.get("headline")}
+    except Exception:
+        return {}
+
+
 def html_erstellen(kandidaten):
     jetzt = datetime.now()
     datum_str = jetzt.strftime("%-d. %B %Y") if sys.platform != "win32" else jetzt.strftime("%d. %B %Y").lstrip("0")
     anzahl = len(kandidaten)
     betreff = f"ungefärbt — {anzahl} Social-Kandidaten | {datum_str}"
+
+    post_lookup = _post_lookup_laden()
 
     if not kandidaten:
         inhalt_html = f"""
@@ -231,7 +316,8 @@ def html_erstellen(kandidaten):
       </div>"""
     else:
         inhalt_html = "".join(
-            _story_block_html(i + 1, s) for i, s in enumerate(kandidaten)
+            _story_block_html(i + 1, s, post_data=post_lookup.get(s.get("headline", "")))
+            for i, s in enumerate(kandidaten)
         )
 
     html = f"""<!DOCTYPE html>
@@ -275,15 +361,18 @@ def html_erstellen(kandidaten):
 # Mail senden
 # ---------------------------------------------------------------------------
 
-def mail_senden(betreff, html_body, sender, recipient, api_key):
+def mail_senden(betreff, html_body, sender, recipient, api_key, attachments=None):
     import resend
     resend.api_key = api_key
-    resend.Emails.send({
+    payload = {
         "from": sender,
         "to": recipient,
         "subject": betreff,
         "html": html_body,
-    })
+    }
+    if attachments:
+        payload["attachments"] = attachments
+    resend.Emails.send(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -334,13 +423,27 @@ def main():
 
     log.info("%s Social-Kandidaten geladen.", len(kandidaten))
 
+    # Barometer-PNGs generieren und als Anhänge sammeln
+    attachments = []
+    for story in kandidaten:
+        try:
+            pfad = _barometer.barometer_erstellen(story)
+            attachments.append({
+                "filename": pfad.name,
+                "content":  list(pfad.read_bytes()),
+            })
+        except Exception as e:
+            log.warning("Barometer-Fehler für '%s': %s", story.get("headline", "?")[:50], e)
+
+    log.info("%s Barometer-PNGs als Anhang vorbereitet.", len(attachments))
+
     # HTML erstellen
     betreff, html_body = html_erstellen(kandidaten)
 
     # Mail senden
     log.info("Sende Mail an %s ...", recipient)
     try:
-        mail_senden(betreff, html_body, sender, recipient, api_key)
+        mail_senden(betreff, html_body, sender, recipient, api_key, attachments=attachments or None)
         log.info("Mail erfolgreich gesendet: %s", betreff)
     except Exception as e:
         log.error("Fehler beim Mailversand via Resend: %s", e)
