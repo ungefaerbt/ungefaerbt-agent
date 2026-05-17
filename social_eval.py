@@ -132,9 +132,10 @@ def kontrast_check_ausfuehren(client, story):
         )
         raw_text = antwort.content[0].text
         ergebnis = _parse_contrast_json(raw_text)
+        contrast_score = int(ergebnis.get("contrast_score", 0))
         return {
-            "has_contrast": bool(ergebnis.get("has_contrast", False)),
-            "contrast_score": int(ergebnis.get("contrast_score", 0)),
+            "has_contrast": bool(ergebnis.get("has_contrast", False)) or contrast_score >= 10,
+            "contrast_score": contrast_score,
             "contrast_type": ergebnis.get("contrast_type", "no_contrast"),
             "contrast_pairs": ergebnis.get("contrast_pairs", []),
             "recommended_social_format": ergebnis.get("recommended_social_format", "keep_existing_format"),

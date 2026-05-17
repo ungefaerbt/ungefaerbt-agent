@@ -290,59 +290,95 @@ def qualitycheck(input_pfad):
         if claude_ergebnisse:
             claude_calls = 1
 
-    # Mergen
+    # ── Iteratives Mergen (max. 3 Durchläufe) ────────────────────────────────
+    MAX_MERGE_ITERATIONS = 3
     merged_pairs = []
-    zu_entfernen = set()
+    merge_iterations_run = 0
 
-    for idx, (i, j) in enumerate(kandidaten_claude):
-        pair_id = f"pair_{idx}"
-        ergebnis = claude_ergebnisse.get(pair_id)
+    for iteration in range(1, MAX_MERGE_ITERATIONS + 1):
+        merge_iterations_run = iteration
 
-        if ergebnis is None:
-            for k in (i, j):
-                notizen = stories[k].setdefault("quality_notes", [])
-                if "possible_duplicate" not in notizen:
-                    notizen.append("possible_duplicate")
-                stories[k]["quality_status"] = "needs_review"
-            continue
+        if iteration == 1:
+            kandidaten_aktuell = kandidaten_claude
+            ergebnisse_aktuell = claude_ergebnisse
+        else:
+            sim_map_neu = aehnlichkeiten_berechnen(stories)
+            kandidaten_aktuell = [
+                (i, j) for (i, j), score in sim_map_neu.items()
+                if score >= SIMILARITY_THRESHOLD_CLAUDE
+                and stories[i].get("category") == stories[j].get("category")
+            ][:MAX_CLAUDE_CANDIDATES]
 
-        decision   = ergebnis.get("decision", "uncertain")
-        confidence = float(ergebnis.get("confidence", 0.0))
+            if not kandidaten_aktuell:
+                logger.info("Merge-Iteration %s: keine neuen Kandidaten.", iteration)
+                break
 
-        if decision == "same_event" and confidence >= 0.80:
-            if i in zu_entfernen or j in zu_entfernen:
+            ergebnisse_aktuell, fehler_iter = claude_paare_pruefen(kandidaten_aktuell, stories)
+            if ergebnisse_aktuell:
+                claude_calls += 1
+
+        zu_entfernen = set()
+        ids_aktuell = [f"story_{i}" for i in range(len(stories))]
+        neue_merges_count = 0
+
+        for idx, (i, j) in enumerate(kandidaten_aktuell):
+            pair_id = f"pair_{idx}"
+            ergebnis = ergebnisse_aktuell.get(pair_id)
+
+            if ergebnis is None:
+                for k in (i, j):
+                    notizen = stories[k].setdefault("quality_notes", [])
+                    if "possible_duplicate" not in notizen:
+                        notizen.append("possible_duplicate")
+                    stories[k]["quality_status"] = "needs_review"
                 continue
-            basis = beste_story(stories[i], stories[j])
-            basis_idx  = i if basis is stories[i] else j
-            andere_idx = j if basis_idx == i else i
-            stories[basis_idx] = mergen(
-                stories[basis_idx], stories[andere_idx],
-                ids[basis_idx], ids[andere_idx],
-            )
-            zu_entfernen.add(andere_idx)
-            merged_pairs.append({
-                "pair_id":    pair_id,
-                "merged_into": ids[basis_idx],
-                "removed":     ids[andere_idx],
-                "confidence":  confidence,
-                "reason":      ergebnis.get("reason", ""),
-            })
 
-        elif decision == "uncertain":
-            for k in (i, j):
-                notizen = stories[k].setdefault("quality_notes", [])
-                if "uncertain_duplicate" not in notizen:
-                    notizen.append("uncertain_duplicate")
-                stories[k]["quality_status"] = "needs_review"
+            decision   = ergebnis.get("decision", "uncertain")
+            confidence = float(ergebnis.get("confidence", 0.0))
 
-        elif decision == "related_but_separate":
-            for story_idx, other_idx in [(i, j), (j, i)]:
-                related = stories[story_idx].setdefault("possible_related_stories", [])
-                other_id = ids[other_idx]
-                if other_id not in related:
-                    related.append(other_id)
+            if decision == "same_event" and confidence >= 0.80:
+                if i in zu_entfernen or j in zu_entfernen:
+                    continue
+                basis = beste_story(stories[i], stories[j])
+                basis_idx  = i if basis is stories[i] else j
+                andere_idx = j if basis_idx == i else i
+                stories[basis_idx] = mergen(
+                    stories[basis_idx], stories[andere_idx],
+                    ids_aktuell[basis_idx], ids_aktuell[andere_idx],
+                )
+                zu_entfernen.add(andere_idx)
+                neue_merges_count += 1
+                merged_pairs.append({
+                    "pair_id":     f"iter{iteration}_{pair_id}",
+                    "merged_into": ids_aktuell[basis_idx],
+                    "removed":     ids_aktuell[andere_idx],
+                    "confidence":  confidence,
+                    "reason":      ergebnis.get("reason", ""),
+                })
 
-    finale_stories = [s for idx, s in enumerate(stories) if idx not in zu_entfernen]
+            elif decision == "uncertain":
+                for k in (i, j):
+                    notizen = stories[k].setdefault("quality_notes", [])
+                    if "uncertain_duplicate" not in notizen:
+                        notizen.append("uncertain_duplicate")
+                    stories[k]["quality_status"] = "needs_review"
+
+            elif decision == "related_but_separate":
+                for story_idx, other_idx in [(i, j), (j, i)]:
+                    related = stories[story_idx].setdefault("possible_related_stories", [])
+                    other_id = ids_aktuell[other_idx]
+                    if other_id not in related:
+                        related.append(other_id)
+
+        stories = [s for idx, s in enumerate(stories) if idx not in zu_entfernen]
+        logger.info(
+            "Merge-Iteration %s/%s: %s neue Merges, %s Stories verbleibend.",
+            iteration, MAX_MERGE_ITERATIONS, neue_merges_count, len(stories),
+        )
+        if neue_merges_count == 0:
+            break
+
+    finale_stories = stories
 
     needs_review_count = sum(1 for s in finale_stories if s.get("quality_status") == "needs_review")
 
@@ -372,6 +408,7 @@ def qualitycheck(input_pfad):
         "different_category_filtered": len(different_category),
         "claude_candidates_total": len(kandidaten_claude),
         "claude_calls":            claude_calls,
+        "merge_iterations":        merge_iterations_run,
         "confirmed_merges":        len(merged_pairs),
         "needs_review_count":      needs_review_count,
         "merged_pairs":            merged_pairs,
