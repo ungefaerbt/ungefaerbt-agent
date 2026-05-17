@@ -52,6 +52,7 @@ PCA_N_COMPONENTS = 5
 MAX_TAGE_ABSTAND = 3
 HDBSCAN_MIN_CLUSTER_SIZE = 2
 HDBSCAN_MIN_SAMPLES = 1
+VOYAGE_API_KEY    = os.getenv("VOYAGE_API_KEY")
 EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "voyage")
 SENTENCE_TRANSFORMER_MODEL = os.getenv(
     "SENTENCE_TRANSFORMER_MODEL",
@@ -126,8 +127,18 @@ def _artikel_zu_text(artikel):
 
 
 # ---------------------------------------------------------------------------
-# Embeddings — Voyage API mit TF-IDF Fallback
+# Embeddings — Voyage API (primär), FastEmbed (Fallback 1), TF-IDF (Fallback 2)
 # ---------------------------------------------------------------------------
+
+def _voyage_embeddings_v2(texte):
+    import voyageai
+    client = voyageai.Client(api_key=VOYAGE_API_KEY)
+    result = client.embed(texte, model="voyage-multilingual-2", input_type="document")
+    arr = np.array(result.embeddings, dtype=np.float32)
+    normen = np.linalg.norm(arr, axis=1, keepdims=True)
+    normen = np.where(normen == 0, 1, normen)
+    return arr / normen
+
 
 def _tfidf_embeddings(texte):
     """
@@ -148,40 +159,59 @@ def _tfidf_embeddings(texte):
 
 def _embeddings_erstellen(texte):
     """
-    Erzeugt Embeddings je nach EMBEDDING_BACKEND.
-    "fastembed": ONNX-basiert, kein torch, kein API-Key (Railway Free Tier)
-    "sentence_transformers": lokales PyTorch-Modell (gecacht, kein API-Key nötig)
-    "voyage" (default): Voyage API
-    Bei Fehler: TF-IDF Fallback nur wenn ALLOW_TFIDF_FALLBACK=true, sonst RuntimeError.
+    Erzeugt Embeddings mit Fallback-Kette:
+    1. Voyage API (primär, wenn VOYAGE_API_KEY gesetzt und EMBEDDING_BACKEND=voyage)
+    2. FastEmbed (wenn EMBEDDING_BACKEND=fastembed oder Voyage fehlschlägt)
+    3. TF-IDF (nur wenn ALLOW_TFIDF_FALLBACK=true)
     """
     logger.info(
         "Embedding-Backend: %s | ALLOW_TFIDF_FALLBACK: %s | Texte: %d",
         EMBEDDING_BACKEND, ALLOW_TFIDF_FALLBACK, len(texte),
     )
 
-    try:
-        if EMBEDDING_BACKEND == "fastembed":
+    # Primär: Voyage
+    if EMBEDDING_BACKEND == "voyage" and VOYAGE_API_KEY:
+        try:
+            embeddings = _voyage_embeddings_v2(texte)
+            logger.info("Voyage: %s Texte eingebettet.", len(texte))
+            return embeddings
+        except Exception as e:
+            logger.warning("Voyage fehlgeschlagen, versuche FastEmbed: %s", e)
+
+    # Fallback 1: FastEmbed
+    if EMBEDDING_BACKEND in ("fastembed", "voyage"):
+        try:
             embeddings = _fastembed_embeddings(texte)
             logger.info("FastEmbed: %s Texte eingebettet.", len(texte))
             return embeddings
+        except Exception as e:
+            logger.error("FastEmbed fehlgeschlagen: %s", e)
+            if not ALLOW_TFIDF_FALLBACK:
+                raise RuntimeError(
+                    f"Alle Embedding-Backends fehlgeschlagen und "
+                    f"ALLOW_TFIDF_FALLBACK ist nicht aktiv. Fehler: {e}"
+                ) from e
 
-        if EMBEDDING_BACKEND == "sentence_transformers":
+    # sentence_transformers (explizit gesetzt)
+    if EMBEDDING_BACKEND == "sentence_transformers":
+        try:
             model = get_sentence_model()
             arr = model.encode(texte, normalize_embeddings=True, convert_to_numpy=True)
             logger.info("SentenceTransformer: %s Texte eingebettet.", len(texte))
             return arr.astype(np.float32)
+        except Exception as e:
+            logger.error("SentenceTransformer fehlgeschlagen: %s", e)
+            if not ALLOW_TFIDF_FALLBACK:
+                raise RuntimeError(
+                    f"Embedding-Backend 'sentence_transformers' fehlgeschlagen und "
+                    f"ALLOW_TFIDF_FALLBACK ist nicht aktiv. Fehler: {e}"
+                ) from e
 
-    except Exception as e:
-        logger.error("Embedding-Backend '%s' fehlgeschlagen: %s", EMBEDDING_BACKEND, e)
-        if not ALLOW_TFIDF_FALLBACK:
-            raise RuntimeError(
-                f"Embedding-Backend '{EMBEDDING_BACKEND}' fehlgeschlagen und "
-                f"ALLOW_TFIDF_FALLBACK ist nicht aktiv. Pipeline gestoppt. Fehler: {e}"
-            ) from e
-        logger.warning("ACHTUNG: TF-IDF-Fallback aktiv — Output nicht für Produktion geeignet.")
-        embeddings = _tfidf_embeddings(texte)
-        logger.info("TF-IDF Fallback: %s Texte eingebettet.", len(texte))
-        return embeddings
+    # Fallback 2: TF-IDF
+    logger.warning("ACHTUNG: TF-IDF-Fallback aktiv — Output nicht für Produktion geeignet.")
+    embeddings = _tfidf_embeddings(texte)
+    logger.info("TF-IDF Fallback: %s Texte eingebettet.", len(texte))
+    return embeddings
 
 
 def _datum_parsen(artikel):
