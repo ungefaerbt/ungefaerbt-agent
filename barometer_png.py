@@ -9,12 +9,10 @@ from PIL import Image, ImageDraw
 OUTPUT_DIR = Path(__file__).parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-WIDTH     = 1080
-HEIGHT    = 28
-MIN_WIDTH = 20
+WIDTH  = 1080
+HEIGHT = 28
 
-COLOR_BG    = (0x1C, 0x18, 0x14)
-COLOR_EMPTY = (0x33, 0x33, 0x33)
+COLOR_BG = (0x1C, 0x18, 0x14)
 
 _SPEKTREN = ["Links", "Mitte-Links", "Mitte", "Mitte-Rechts", "Rechts"]
 _FARBEN   = {
@@ -25,27 +23,17 @@ _FARBEN   = {
     "Rechts":       (0xC4, 0x61, 0x4A),
 }
 
-def _segment_widths(dist: dict) -> list[int]:
-    counts    = [dist.get(s, 0) for s in _SPEKTREN]
-    n_empty   = sum(1 for c in counts if c == 0)
-    remaining = WIDTH - n_empty * MIN_WIDTH
-    total_active = sum(c for c in counts if c > 0)
-
-    widths = []
-    for c in counts:
-        if c == 0:
-            widths.append(MIN_WIDTH)
-        else:
-            widths.append(round(c / total_active * remaining) if total_active else 0)
-
-    # Rounding-Korrektur am letzten aktiven Segment
-    diff = WIDTH - sum(widths)
+def _segment_widths(dist: dict) -> list[tuple[str, int]]:
+    """Gibt (spektrum, breite) nur für aktive Segmente zurück. Summe = WIDTH."""
+    aktiv = [(s, dist[s]) for s in _SPEKTREN if dist.get(s, 0) > 0]
+    if not aktiv:
+        return []
+    total = sum(c for _, c in aktiv)
+    widths = [(s, round(c / total * WIDTH)) for s, c in aktiv]
+    diff = WIDTH - sum(w for _, w in widths)
     if diff != 0:
-        for idx in range(len(widths) - 1, -1, -1):
-            if counts[idx] > 0:
-                widths[idx] += diff
-                break
-
+        s, w = widths[-1]
+        widths[-1] = (s, w + diff)
     return widths
 
 
@@ -57,10 +45,8 @@ def generate_barometer(spectrum_distribution: dict, cluster_id) -> Path:
     draw = ImageDraw.Draw(img)
 
     x = 0
-    for i, spektrum in enumerate(_SPEKTREN):
-        w     = widths[i]
-        color = COLOR_EMPTY if dist.get(spektrum, 0) == 0 else _FARBEN[spektrum]
-        draw.rectangle([x, 0, x + w - 1, HEIGHT - 1], fill=color)
+    for spektrum, w in widths:
+        draw.rectangle([x, 0, x + w - 1, HEIGHT - 1], fill=_FARBEN[spektrum])
         x += w
 
     pfad = OUTPUT_DIR / f"barometer_{cluster_id}.png"
