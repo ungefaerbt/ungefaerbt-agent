@@ -18,6 +18,8 @@ import os
 import sys
 from pathlib import Path
 
+import barometer_png as _barometer
+
 OUTPUT_DIR = Path(__file__).parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -198,11 +200,21 @@ def social_pack_erstellen(input_pfad: str) -> list:
         social_post_worthy = story.get("social_post_worthy", False)
 
         if hat_kontrast and contrast_pairs:
-            posts.append(_kontrast_post(story))
+            post = _kontrast_post(story)
             kontrast_count += 1
         elif social_post_worthy:
-            posts.append(_standard_post(story))
+            post = _standard_post(story)
             standard_count += 1
+        else:
+            continue
+
+        try:
+            baro_pfad = _barometer.barometer_erstellen(story)
+            post["barometer_file"] = baro_pfad.name
+        except Exception as e:
+            logger.warning("Barometer-Fehler für '%s': %s", story.get("headline", "?")[:50], e)
+
+        posts.append(post)
 
     posts.sort(key=lambda p: p["social_priority_score"], reverse=True)
 
